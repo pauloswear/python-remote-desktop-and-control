@@ -90,7 +90,7 @@ class ControlleeProtocol(ProtocolBase):
                     self.is_processing_screenshot = False
         
         # Ultra-aggressive scheduling for maximum FPS
-        next_delay = max(0.005, self.screenshot_interval * 0.8)  # More conservative to prevent flicker
+        next_delay = max(0.001, self.screenshot_interval * 0.5)  # More aggressive for low latency
         reactor.callLater(next_delay, self.sendScreenshot)
 
     def sendScreenshotNumpy(self):
@@ -162,7 +162,7 @@ class ControlleeProtocol(ProtocolBase):
                         area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
                         if area < 50000:  # Small change area, send delta
                             region = current_image.crop(bbox)
-                            region.save(output, format="WebP", quality=95, method=0)
+                            region.save(output, format="WebP", lossless=True, quality=100, method=0)
                             region_data = output.getvalue()
                             # Send delta: 'DELTA' + bbox + data
                             delta_data = b'DELTA' + struct.pack('<IIII', bbox[0], bbox[1], bbox[2], bbox[3]) + region_data
@@ -178,7 +178,7 @@ class ControlleeProtocol(ProtocolBase):
                 elif fps_target >= 60:
                     quality = 20  # Low quality for high speed
                 else:
-                    quality = 80  # High quality for balanced FPS (30-60)
+                    quality = 60  # Balanced quality for low latency (30-60 FPS)
                 
                 # Ultra-fast WebP encoding (better compression than JPEG)
                 current_image.save(output, format="WebP", quality=quality, method=0)  # method=0 for fastest encoding
