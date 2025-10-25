@@ -40,6 +40,10 @@ class PyQt5ControllerProtocol(QObject):
         self.drag_button = None
         self.last_mouse_pos = None
         
+        # Throttle mouse move commands to improve performance
+        self.last_mouse_send_time = 0
+        self.mouse_send_interval = 0.05  # 50ms minimum between sends
+        
         # Performance optimization variables
         self.last_image_size = None
         self.cached_pixmap = None
@@ -282,13 +286,20 @@ class PyQt5ControllerProtocol(QObject):
     
     def mouse_move_event(self, event):
         """Handle mouse move events - crucial for drag operations"""
+        current_time = time.time()
+        
+        # Throttle mouse move commands to prevent overwhelming the command queue
+        if current_time - self.last_mouse_send_time < self.mouse_send_interval:
+            return
+        
         pos = self.get_relative_position(event.x(), event.y())
         
         # Always send mouse movement for real-time tracking
         self.send_command('MoveMouse', pos[0], pos[1])
         
-        # Update last known position
+        # Update last known position and send time
         self.last_mouse_pos = pos
+        self.last_mouse_send_time = current_time
     
     def wheel_event(self, event):
         """Handle mouse wheel events"""

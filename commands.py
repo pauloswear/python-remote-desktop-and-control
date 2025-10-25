@@ -31,11 +31,11 @@ class CommandBase():
         self.isDone = False
         self.config = config
         self.frame = -1
-        print("Command created", self)
+        # print("Command created", self)
 
     def start(self):
         self.timeStart = time.time()
-        print("Command started", self)
+        # print("Command started", self)
 
     def update(self):
         self.frame += 1
@@ -45,7 +45,7 @@ class CommandBase():
 
     def finish(self):
         self.isDone = True
-        print("Command finished", self)
+        # print("Command finished", self)
     
     def __str__(self):
         return self.__class__.__name__
@@ -61,11 +61,11 @@ class CommandMoveMouse(CommandBase):
             self.target = (round(m['width'] * x + m['left']),
                            round(m['height'] * y + m['top']))
         CommandBase.__init__(self, config)
+        global mouseController
+        self.controller = mouseController
 
     def start(self):
-        global mouseController
         CommandBase.start(self)
-        self.controller = mouseController
 
     def update(self):
         CommandBase.update(self)
