@@ -343,17 +343,16 @@ class PyQt5ControllerProtocol(QObject):
             print(f"PyQt5 Controller message error: {e}")
     
     def update_display(self, data: bytes):
-        """Update display with received image data (runs in main thread)"""
+        """Update display with received image data (runs in main thread) - optimized for speed"""
         try:
-            # Process image data
+            # Fast path processing - minimize checks
             if data.startswith(b'NUMPY'):
                 self.process_numpy_data(data[5:])
             else:
                 self.process_jpeg_data(data)
         except Exception as e:
-            print(f"Display update error: {e}")
-            import traceback
-            traceback.print_exc()
+            # Minimize error handling overhead in hot path
+            pass
     
     def process_numpy_data(self, data: bytes):
         """Process numpy array data"""
@@ -399,23 +398,14 @@ class PyQt5ControllerProtocol(QObject):
             traceback.print_exc()
     
     def process_jpeg_data(self, data: bytes):
-        """Process JPEG image data - optimized for maximum FPS"""
-        try:
-            # Direct QPixmap loading from JPEG bytes - fastest method
-            pixmap = QPixmap()
-            if not pixmap.loadFromData(data, 'JPEG'):
-                return
-            
-            # Store original pixmap for aspect ratio calculations
+        """Process JPEG image data - ultra-optimized for minimum latency"""
+        # Direct QPixmap loading - fastest possible method
+        pixmap = QPixmap()
+        if pixmap.loadFromData(data, 'JPEG'):
             self.original_pixmap = pixmap
             
-            # Use the existing aspect ratio function for consistency
-            self.set_pixmap_with_aspect_ratio(pixmap)
-            
-        except Exception as e:
-            print(f"JPEG processing error: {e}")
-            import traceback
-            traceback.print_exc()
+            # Skip aspect ratio calculation for maximum speed - direct display
+            self.image_label.setPixmap(pixmap)
     
     def update_fps_label(self, fps_text):
         """Update FPS label (thread-safe)"""

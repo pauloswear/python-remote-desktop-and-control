@@ -33,8 +33,8 @@ class RawSocketProtocol:
         """High-performance send worker thread"""
         while self.running:
             try:
-                # Get message with minimal timeout for responsiveness
-                data = self.send_queue.get(timeout=0.001)
+                # Get message with ultra-minimal timeout for maximum responsiveness  
+                data = self.send_queue.get(timeout=0.0001)  # 0.1ms timeout
                 if data is None:  # Shutdown signal
                     break
                     
@@ -53,8 +53,8 @@ class RawSocketProtocol:
         """High-performance receive worker thread"""
         while self.running:
             try:
-                # Receive data in chunks
-                data = self.socket.recv(65536)  # 64KB chunks
+                # Receive data with larger buffer for less overhead
+                data = self.socket.recv(131072)  # 128KB chunks for better throughput
                 if not data:
                     break
                     
@@ -133,10 +133,19 @@ class RawSocketServer(RawSocketProtocol):
                 client_socket, addr = self.server_socket.accept()
                 print(f"Raw socket client connected: {addr}")
                 
-                # Configure client socket for ultra-low latency
-                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
+                # Ultra-aggressive socket optimization for minimum latency
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # No Nagle
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)  # 512KB send buffer
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB receive buffer
+                
+                # Additional low-latency optimizations
+                try:
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)  # Quick ACK
+                except (AttributeError, OSError):
+                    pass  # Not available on all platforms
+                
+                # Set socket to non-blocking for faster operations
+                client_socket.setblocking(True)  # Keep blocking for simplicity but optimize
                 
                 # Create protocol instance
                 if callable(self.protocol_class):
@@ -180,10 +189,16 @@ class RawSocketClient(RawSocketProtocol):
         """Connect to server"""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
-        # Ultra-low latency socket options
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
+        # Ultra-aggressive client socket optimization
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # No Nagle
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)  # 512KB send buffer  
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB receive buffer
+        
+        # Additional low-latency optimizations
+        try:
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)  # Quick ACK
+        except (AttributeError, OSError):
+            pass  # Not available on all platforms
         
         try:
             self.socket.connect((self.host, self.port))

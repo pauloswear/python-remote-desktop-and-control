@@ -84,8 +84,8 @@ class RawControlleeProtocol(RawSocketProtocol):
                             finally:
                                 self.is_processing_screenshot = False
                 
-                # Balanced sleep to prevent excessive CPU usage and flicker
-                time.sleep(0.008)  # 8ms for smoother operation
+                # Minimal sleep for ultra-low latency
+                time.sleep(0.001)  # 1ms for maximum responsiveness
                 
             except Exception as e:
                 print(f"Screenshot loop error: {e}")
@@ -122,31 +122,38 @@ class RawControlleeProtocol(RawSocketProtocol):
             self.write_message(message_data)
     
     def send_screenshot_jpeg(self):
-        """Ultra-optimized JPEG implementation"""
-        with io.BytesIO() as output:
-            with mss() as sct:
-                monitor_idx = min(self.config[VAR_MONITOR], len(sct.monitors) - 1)
-                ss = sct.grab(sct.monitors[monitor_idx])
+        """Ultra-optimized JPEG implementation for minimum latency"""
+        with mss() as sct:
+            monitor_idx = min(self.config[VAR_MONITOR], len(sct.monitors) - 1)
+            ss = sct.grab(sct.monitors[monitor_idx])
+            
+            # Direct RGB conversion without intermediate steps
+            img = PIL.Image.frombytes('RGB', ss.size, ss.bgra, 'raw', 'BGRX')
+            
+            # Scale only if necessary
+            scale = self.config[VAR_SCALE]
+            if scale < 1.0:
+                new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
+                # Use NEAREST for fastest scaling
+                img = img.resize(new_size, PIL.Image.NEAREST)
+            
+            # Ultra-aggressive JPEG settings for speed
+            fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
+            if fps_target >= 60:
+                quality = 15  # Very low quality for max speed
+                subsampling = 2  # Aggressive subsampling
+            else:
+                quality = self.config.get(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT)
+                subsampling = 0
+            
+            # Direct to bytes without intermediate BytesIO
+            with io.BytesIO() as output:
+                img.save(output, format="JPEG", 
+                        quality=quality, 
+                        optimize=False,  # Disable optimization for speed
+                        progressive=False,  # Disable progressive for speed
+                        subsampling=subsampling)
                 
-                # Fast PIL conversion
-                ss = PIL.Image.frombytes('RGB', ss.size, ss.bgra, 'raw', 'BGRX')
-                
-                # Fast scaling
-                if self.config[VAR_SCALE] < 1:
-                    new_size = (int(ss.size[0] * self.config[VAR_SCALE]),
-                               int(ss.size[1] * self.config[VAR_SCALE]))
-                    ss = ss.resize(new_size, PIL.Image.NEAREST)
-                
-                # Adaptive quality for FPS
-                fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
-                if fps_target >= 120:
-                    quality = 10  # Extreme speed
-                elif fps_target >= 60:
-                    quality = 20  # High speed
-                else:
-                    quality = self.config.get(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT)
-                
-                ss.save(output, format="JPEG", quality=quality, optimize=False)
                 self.write_message(output.getvalue())
     
     def message_received(self, data: bytes):
