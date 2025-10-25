@@ -19,7 +19,7 @@ class RawSocketProtocol:
         self.send_queue = queue.Queue()
         self.receive_buffer = b''
         self.message_handler: Optional[Callable] = None
-        self.is_udp = False  # Temporarily use TCP for testing
+        self.is_udp = True  # Temporarily use TCP for testing
         self.remote_addr = None
         
     def set_message_handler(self, handler: Callable):
