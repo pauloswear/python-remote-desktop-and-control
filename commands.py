@@ -66,20 +66,9 @@ class CommandMoveMouse(CommandBase):
 
     def start(self):
         CommandBase.start(self)
-
-    def update(self):
-        CommandBase.update(self)
-        
-        vecToTarget = vector_subract(self.target, self.controller.position)
-        l = vector_length(vecToTarget)
-        if l < self.speed:
-            self.controller.position = self.target
-            self.finish()
-        else:
-            rel = vector_normalize(vecToTarget, l)
-            rel = vector_multiply(rel, self.speed)
-            rel = vector_round(rel)
-            self.controller.move(rel[0], rel[1])
+        # Move mouse instantly to target position for better performance
+        self.controller.position = self.target
+        self.finish()
     
     def __str__(self):
         ret = 'Move mouse ' + str(self.target[0]) + 'x' + str(self.target[1])

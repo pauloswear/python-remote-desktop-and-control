@@ -42,7 +42,7 @@ class PyQt5ControllerProtocol(QObject):
         
         # Throttle mouse move commands to improve performance
         self.last_mouse_send_time = 0
-        self.mouse_send_interval = 0.05  # 50ms minimum between sends
+        self.mouse_send_interval = 0.02  # 20ms minimum between sends
         
         # Performance optimization variables
         self.last_image_size = None
