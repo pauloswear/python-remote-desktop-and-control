@@ -41,6 +41,13 @@ class RawControlleeProtocol(RawSocketProtocol):
             'current_quality_offset': 0
         }
         
+        # Tile-based delta encoding
+        self.tile_size = 64  # 64x64 pixel tiles
+        self.last_tiles = {}  # Cache of tile hashes for change detection
+        self.tile_cache = {}  # Cache of encoded tiles
+        self.tile_timestamps = {}  # Track when tiles were last sent
+        self.static_tile_threshold = 5.0  # 5 seconds of no change = static
+        
         # Initialize config
         self.set_variable(VAR_SCALE, VAR_SCALE_DEFAULT, False)
         self.set_variable(VAR_MONITOR, VAR_MONITOR_DEFAULT, False)
@@ -597,11 +604,11 @@ class RawControllerProtocol(RawSocketProtocol):
             import PIL.Image
             from PIL import ImageTk
             
-            # Parse header
-            if len(data) < 8:
+            # Parse header - 3 integers: num_tiles, quality, fps_target
+            if len(data) < 12:  # 3 * 4 bytes
                 return
-            num_tiles, quality = struct.unpack('<II', data[:8])
-            data = data[8:]
+            num_tiles, quality, fps_target = struct.unpack('<III', data[:12])
+            data = data[12:]
             
             # Process tiles
             tiles_processed = 0

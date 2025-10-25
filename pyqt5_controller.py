@@ -340,6 +340,9 @@ class PyQt5ControllerProtocol(QObject):
             if hasattr(self, 'last_received_time'):
                 fps = 1.0 / (current_time - self.last_received_time)
                 self.fps_updated.emit(f"{fps:.1f}")
+                
+                # Send network feedback for adaptive quality
+                self._send_network_feedback(fps)
             
             self.last_received_time = current_time
             
@@ -354,17 +357,46 @@ class PyQt5ControllerProtocol(QObject):
         except Exception as e:
             print(f"PyQt5 Controller message error: {e}")
     
+    def _send_network_feedback(self, current_fps):
+        """Send network performance feedback to controllee"""
+        # Simple adaptive quality: if FPS is low, request lower quality
+        target_fps = self.fps_slider.value() if hasattr(self, 'fps_slider') and self.fps_slider else VAR_FPS_DEFAULT
+        
+        if current_fps < target_fps * 0.8:  # FPS is 20% below target
+            quality_adjustment = -10  # Reduce quality
+        elif current_fps > target_fps * 1.1:  # FPS is 10% above target
+            quality_adjustment = 5  # Can increase quality slightly
+        else:
+            quality_adjustment = 0  # Keep current quality
+        
+        # Send feedback
+        feedback = f"NET_FEEDBACK:{quality_adjustment}:{current_fps:.1f}"
+        self.write_message(feedback.encode('ascii'))
+    
     def update_display(self, data: bytes):
         """Update display with received image data (runs in main thread) - optimized for speed"""
         try:
+            print(f"DEBUG: update_display called with {len(data)} bytes, starts with: {data[:10] if len(data) >= 10 else data}")
+            
             # Fast path processing - minimize checks
             if data.startswith(b'NUMPY'):
+                print("DEBUG: Processing NUMPY data")
                 self.process_numpy_data(data[5:])
+            elif data.startswith(b'TILES'):
+                print("DEBUG: Processing TILES data")
+                self._process_tiles(data[5:])
+            elif data == b'NO_CHANGE':
+                print("DEBUG: NO_CHANGE received")
+                # No changes, just keep current image
+                pass
             else:
+                print("DEBUG: Processing as JPEG data")
                 self.process_jpeg_data(data)
         except Exception as e:
             # Minimize error handling overhead in hot path
-            pass
+            print(f"Display update error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def process_numpy_data(self, data: bytes):
         """Process numpy array data"""
@@ -406,6 +438,126 @@ class PyQt5ControllerProtocol(QObject):
             
         except Exception as e:
             print(f"Numpy processing error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _process_tiles(self, data: bytes):
+        """Process tile-based updates for PyQt5"""
+        try:
+            # Parse header - 3 integers: num_tiles, quality, fps_target
+            if len(data) < 12:  # 3 * 4 bytes
+                print(f"DEBUG: Tile data too short: {len(data)} bytes")
+                return
+            num_tiles, quality, fps_target = struct.unpack('<III', data[:12])
+            data = data[12:]
+            
+            print(f"DEBUG: Processing {num_tiles} tiles with quality {quality}, fps_target {fps_target}")
+            
+            # Process tiles
+            tiles_processed = 0
+            while tiles_processed < num_tiles and len(data) >= 16:
+                # Parse tile header
+                tile_header = data[:16]
+                x, y, tile_width, tile_height = struct.unpack('<IIII', tile_header)
+                data = data[16:]
+                
+                # Find JPEG data end (look for next tile header or end)
+                jpeg_end = len(data)
+                if tiles_processed < num_tiles - 1:
+                    # Look for next tile header (16 bytes of 4 ints)
+                    for i in range(16, len(data) - 16):
+                        if len(data) > i + 16:
+                            try:
+                                # Check if this looks like coordinates
+                                test_x, test_y, test_w, test_h = struct.unpack('<IIII', data[i:i+16])
+                                if 0 <= test_x <= 10000 and 0 <= test_y <= 10000 and 1 <= test_w <= 200 and 1 <= test_h <= 200:
+                                    jpeg_end = i
+                                    break
+                            except:
+                                continue
+                
+                jpeg_data = data[:jpeg_end]
+                data = data[jpeg_end:]
+                
+                # Decode tile
+                try:
+                    tile_pixmap = QPixmap()
+                    if tile_pixmap.loadFromData(jpeg_data, 'JPEG'):
+                        # Update tile cache
+                        tile_key = (x, y)
+                        self.tile_cache[tile_key] = (tile_pixmap, tile_width, tile_height)
+                        
+                        # Update image size estimate if needed
+                        if self.image_size is None:
+                            # Estimate based on tile position + size
+                            max_x = max((x + w for (x, y), (p, w, h) in self.tile_cache.items()), default=1920)
+                            max_y = max((y + h for (x, y), (p, w, h) in self.tile_cache.items()), default=1080)
+                            self.image_size = (max_x, max_y)
+                        
+                        tiles_processed += 1
+                        print(f"DEBUG: Processed tile {tiles_processed}/{num_tiles} at ({x},{y})")
+                    else:
+                        print(f"Failed to load tile JPEG data at ({x},{y})")
+                        
+                except Exception as e:
+                    print(f"Tile decode error at ({x},{y}): {e}")
+                    continue
+            
+            print(f"DEBUG: Processed {tiles_processed} tiles total")
+            
+            # Reconstruct full image from tiles
+            self._reconstruct_image_from_tiles()
+            
+        except Exception as e:
+            print(f"Tile processing error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _reconstruct_image_from_tiles(self):
+        """Reconstruct full image from cached tiles for PyQt5"""
+        if not self.tile_cache:
+            print("No tiles in cache, skipping reconstruction")
+            return
+        
+        if self.image_size is None:
+            print("No image size set, skipping reconstruction")
+            return
+        
+        try:
+            print(f"Reconstructing image from {len(self.tile_cache)} tiles, size {self.image_size}")
+            
+            # Create full image
+            full_image = QImage(self.image_size[0], self.image_size[1], QImage.Format_RGB888)
+            full_image.fill(Qt.black)  # Fill with black background
+            
+            # Create painter to draw tiles
+            painter = QPainter(full_image)
+            
+            # Draw tiles
+            tiles_drawn = 0
+            for (x, y), (tile_pixmap, tile_width, tile_height) in self.tile_cache.items():
+                # Ensure tile fits within image bounds
+                if x + tile_width <= self.image_size[0] and y + tile_height <= self.image_size[1]:
+                    painter.drawPixmap(x, y, tile_pixmap)
+                    tiles_drawn += 1
+            
+            painter.end()
+            
+            print(f"Drew {tiles_drawn} tiles, displaying image")
+            
+            # Convert to pixmap and display
+            full_pixmap = QPixmap.fromImage(full_image)
+            if not full_pixmap.isNull():
+                self.set_pixmap_with_aspect_ratio(full_pixmap)
+                print("Image displayed successfully")
+            else:
+                print("Failed to create pixmap from reconstructed image")
+            
+            # Clear tile cache after reconstruction to prevent memory buildup
+            self.tile_cache.clear()
+            
+        except Exception as e:
+            print(f"Image reconstruction error: {e}")
             import traceback
             traceback.print_exc()
     
