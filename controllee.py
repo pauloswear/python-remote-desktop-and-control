@@ -90,7 +90,7 @@ class ControlleeProtocol(ProtocolBase):
                     self.is_processing_screenshot = False
         
         # Ultra-aggressive scheduling for maximum FPS
-        next_delay = max(0.0001, self.screenshot_interval * 0.1)  # Schedule very early
+        next_delay = max(0.005, self.screenshot_interval * 0.8)  # More conservative to prevent flicker
         reactor.callLater(next_delay, self.sendScreenshot)
 
     def sendScreenshotNumpy(self):

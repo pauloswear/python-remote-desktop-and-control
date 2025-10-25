@@ -29,8 +29,11 @@ class ControllerProtocol(ProtocolBase):
         self.root.state('zoomed')
         self.root.protocol("WM_DELETE_WINDOW", self.onCloseClicked)
         self.lastReceivedTime = time.time()
+        
+        # Anti-flicker configurations
+        self.root.configure(bg='black')
 
-        frame = tkinter.Frame(self.root)
+        frame = tkinter.Frame(self.root, bg='black')
         frame.pack()
 
         tkinter.Label(frame, text='Monitor:').pack(side=tkinter.LEFT)
@@ -70,7 +73,7 @@ class ControllerProtocol(ProtocolBase):
         self.fpsLabel = tkinter.Label(frame, text='?')
         self.fpsLabel.pack(side=tkinter.LEFT)
 
-        self.label = tkinter.Label(self.root)
+        self.label = tkinter.Label(self.root, bg='black', highlightthickness=0, bd=0)
         self.label.pack(fill=tkinter.BOTH, expand=True)
         # self.label.bind('<Motion>', self.onMouseMoved)
         self.root.bind('<Key>', self.onKeyDown)
@@ -209,23 +212,37 @@ class ControllerProtocol(ProtocolBase):
             newSize = self.getLabelSize()
             if newSize[0] > 0 and newSize[1] > 0:
                 img = img.resize(newSize, Image.NEAREST)  # NEAREST is fastest
-                self.currentImage = ImageTk.PhotoImage(img)
-                self.label.configure(image=self.currentImage)
+                
+                # Anti-flicker: update in next idle cycle
+                new_image = ImageTk.PhotoImage(img)
+                self.root.after_idle(lambda: self.updateImageSafe(new_image))
                 
         except Exception as e:
             print(f"Error processing numpy data: {e}")
 
     def processJPEGData(self, data: bytes):
-        """Process JPEG image data (fallback)"""
+        """Process JPEG image data with anti-flicker optimization"""
         try:
             newSize = self.getLabelSize()
             if newSize[0] > 0 and newSize[1] > 0:
                 img = Image.open(BytesIO(data))
                 img = img.resize(newSize, Image.NEAREST)
-                self.currentImage = ImageTk.PhotoImage(img)
-                self.label.configure(image=self.currentImage)
+                
+                # Anti-flicker: update in next idle cycle
+                new_image = ImageTk.PhotoImage(img)
+                self.root.after_idle(lambda: self.updateImageSafe(new_image))
         except Exception as e:
             print(f"Error processing JPEG data: {e}")
+    
+    def updateImageSafe(self, new_image):
+        """Safely update image to prevent flicker"""
+        try:
+            if new_image and hasattr(self, 'label'):
+                self.currentImage = new_image
+                self.label.configure(image=self.currentImage)
+                self.label.update_idletasks()
+        except Exception as e:
+            print(f"Safe image update error: {e}")
 
     def connectionLost(self, reason):
         print('Connection lost', reason)

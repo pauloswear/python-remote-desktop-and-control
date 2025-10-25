@@ -84,8 +84,8 @@ class RawControlleeProtocol(RawSocketProtocol):
                             finally:
                                 self.is_processing_screenshot = False
                 
-                # Ultra-short sleep for maximum responsiveness
-                time.sleep(0.0001)  # 0.1ms
+                # Balanced sleep to prevent excessive CPU usage and flicker
+                time.sleep(0.008)  # 8ms for smoother operation
                 
             except Exception as e:
                 print(f"Screenshot loop error: {e}")
@@ -204,13 +204,16 @@ class RawControllerProtocol(RawSocketProtocol):
     def setup_ui(self):
         """Setup the UI similar to original controller"""
         import tkinter
-        
+
         print("Raw Controller: Setting up UI")
         self.root = tkinter.Toplevel(self.tk_root)
         self.root.state('zoomed')
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_clicked)
         
-        frame = tkinter.Frame(self.root)
+        # Anti-flicker configurations
+        self.root.configure(bg='black')  # Set background to black to avoid white flash
+        
+        frame = tkinter.Frame(self.root, bg='black')  # Black background for frame too
         frame.pack()
         
         # Monitor control
@@ -253,9 +256,13 @@ class RawControllerProtocol(RawSocketProtocol):
         self.fps_label = tkinter.Label(frame, text='?')
         self.fps_label.pack(side=tkinter.LEFT)
         
-        # Image label
-        self.label = tkinter.Label(self.root)
+        # Image label with anti-flicker settings
+        self.label = tkinter.Label(self.root, bg='black', highlightthickness=0, bd=0)
         self.label.pack(fill=tkinter.BOTH, expand=True)
+        
+        # Initialize with a black image to prevent white flash
+        self.current_image = None
+        self.create_initial_black_image()
         
         # Bind events
         self.root.bind('<Key>', self.on_key_down)
@@ -265,6 +272,17 @@ class RawControllerProtocol(RawSocketProtocol):
         self.label.bind('<MouseWheel>', self.on_mouse_wheel)
         
         self.root.focus_set()
+    
+    def create_initial_black_image(self):
+        """Create initial black image to prevent white flash"""
+        try:
+            from PIL import Image, ImageTk
+            # Create a small black image
+            black_img = Image.new('RGB', (100, 100), color='black')
+            self.current_image = ImageTk.PhotoImage(black_img)
+            self.label.configure(image=self.current_image)
+        except Exception as e:
+            print(f"Error creating initial black image: {e}")
     
     def connection_made(self):
         """Called when connection is established"""
@@ -368,7 +386,7 @@ class RawControllerProtocol(RawSocketProtocol):
             self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
     
     def process_numpy_data(self, data: bytes):
-        """Process numpy data"""
+        """Process numpy data with anti-flicker optimization"""
         try:
             import PIL.Image
             from PIL import ImageTk
@@ -390,19 +408,23 @@ class RawControllerProtocol(RawSocketProtocol):
             # Reconstruct numpy array
             img_array = np.frombuffer(array_bytes, dtype=np.uint8).reshape((height, width, channels))
             
-            # Convert to PIL and display
+            # Convert to PIL and display with anti-flicker
             img = PIL.Image.fromarray(img_array, 'RGB')
             new_size = self.get_label_size()
             if new_size[0] > 0 and new_size[1] > 0:
                 img = img.resize(new_size, PIL.Image.NEAREST)
-                self.current_image = ImageTk.PhotoImage(img)
-                self.label.configure(image=self.current_image)
+                
+                # Anti-flicker: only update if we have a valid image
+                new_image = ImageTk.PhotoImage(img)
+                
+                # Use after_idle to prevent flicker
+                self.tk_root.after_idle(lambda: self.update_image_safe(new_image))
             
         except Exception as e:
             print(f"Numpy processing error: {e}")
     
     def process_jpeg_data(self, data: bytes):
-        """Process JPEG data"""
+        """Process JPEG data with anti-flicker optimization"""
         try:
             import PIL.Image
             from PIL import ImageTk
@@ -411,8 +433,24 @@ class RawControllerProtocol(RawSocketProtocol):
             if new_size[0] > 0 and new_size[1] > 0:
                 img = PIL.Image.open(io.BytesIO(data))
                 img = img.resize(new_size, PIL.Image.NEAREST)
-                self.current_image = ImageTk.PhotoImage(img)
-                self.label.configure(image=self.current_image)
+                
+                # Anti-flicker: create image and update safely
+                new_image = ImageTk.PhotoImage(img)
+                
+                # Use after_idle to prevent flicker
+                self.tk_root.after_idle(lambda: self.update_image_safe(new_image))
                 
         except Exception as e:
             print(f"JPEG processing error: {e}")
+    
+    def update_image_safe(self, new_image):
+        """Safely update image to prevent flicker"""
+        try:
+            if new_image and hasattr(self, 'label'):
+                # Keep reference to prevent garbage collection
+                self.current_image = new_image
+                self.label.configure(image=self.current_image)
+                # Force update without flickering
+                self.label.update_idletasks()
+        except Exception as e:
+            print(f"Safe image update error: {e}")
