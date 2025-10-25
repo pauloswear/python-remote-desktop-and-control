@@ -343,9 +343,9 @@ class RawSocketServer(RawSocketProtocol):
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
                     # Additional low-latency TCP options
-                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)  # Quick ACK
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Quick ACK
                     # Disable TCP slow start and congestion control for local networks
-                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')  # Use Reno for lower latency
+                    # client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')  # Use Reno for lower latency
                 except OSError as e:
                     print(f"Socket optimization warning: {e}")
                 
@@ -414,9 +414,9 @@ class RawSocketClient(RawSocketProtocol):
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
                 # Low-latency TCP options (may not be available on all platforms)
                 try:
-                    self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+                    self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 except AttributeError:
-                    pass  # TCP_QUICKACK not available on Windows
+                    pass  # TCP_NODELAY not available on Windows
                 try:
                     self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')
                 except AttributeError:
