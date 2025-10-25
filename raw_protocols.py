@@ -87,9 +87,9 @@ class RawControlleeProtocol(RawSocketProtocol):
                             self.last_screenshot_time = current_time
                             
                             try:
-                                # Smart method selection
+                                # Smart method selection - prefer tiles for testing
                                 fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
-                                use_numpy = self.config.get(VAR_USE_NUMPY, VAR_USE_NUMPY_DEFAULT)
+                                use_numpy = False  # Force tiles for PyQt5 testing
                                 scale = self.config.get(VAR_SCALE, VAR_SCALE_DEFAULT)
                                 
                                 if use_numpy and scale <= 0.5 and fps_target >= 90:
@@ -229,9 +229,8 @@ class RawControlleeProtocol(RawSocketProtocol):
         else:  # Many changes
             quality = max(10, base_quality - 15)  # Lower quality for speed
         
-        # Send tile update header with quality info
-        header = struct.pack('<III', len(changed_tiles), quality, int(fps_target))
-        self.write_message(b'TILES' + header)
+        # Accumulate all tile data
+        tile_data_list = []
         
         # Send each changed tile with optimized encoding
         for x, y, tile_width, tile_height, tile_key in changed_tiles:
@@ -245,11 +244,11 @@ class RawControlleeProtocol(RawSocketProtocol):
                          progressive=False,  # Disable progressive for speed
                          subsampling=2 if quality < 50 else 0)  # Aggressive subsampling for low quality
                 
-                tile_data = output.getvalue()
+                tile_jpeg_data = output.getvalue()
             
             # Limit tile data size to prevent connection issues
             max_tile_size = 8192  # 8KB max per tile
-            if len(tile_data) > max_tile_size:
+            if len(tile_jpeg_data) > max_tile_size:
                 # If tile is too large, reduce quality further
                 reduced_quality = max(10, quality - 20)
                 with io.BytesIO() as output:
@@ -258,15 +257,22 @@ class RawControlleeProtocol(RawSocketProtocol):
                              optimize=False,
                              progressive=False,
                              subsampling=2)
-                    tile_data = output.getvalue()
+                    tile_jpeg_data = output.getvalue()
                 
-                if len(tile_data) > max_tile_size:
+                if len(tile_jpeg_data) > max_tile_size:
                     # Still too large, skip this tile
                     continue
             
-            # Send tile header + data
+            # Add tile header + data to the list
             tile_header = struct.pack('<IIII', x, y, tile_width, tile_height)
-            self.write_message(tile_header + tile_data)
+            tile_data_list.append(tile_header + tile_jpeg_data)
+        
+        # Send all tiles in one message
+        if tile_data_list:
+            # Send tile update header with quality info
+            header = struct.pack('<III', len(tile_data_list), quality, int(fps_target))
+            all_tile_data = b''.join(tile_data_list)
+            self.write_message(b'TILES' + header + all_tile_data)
     
     def message_received(self, data: bytes):
         """Handle received messages"""
@@ -276,8 +282,11 @@ class RawControlleeProtocol(RawSocketProtocol):
             if decoded == COMMAND_SEND_SCREENSHOT:
                 pass  # Screenshots are sent automatically
             elif decoded.startswith(COMMAND_SET_VAR):
+                print(f"DEBUG: Received SET_VAR command: {decoded}")
                 command_info = __import__('json').loads(decoded[len(COMMAND_SET_VAR):])
+                print(f"DEBUG: Parsed command info: {command_info}")
                 self.set_variable(**command_info)
+                print(f"DEBUG: Config after change: {self.config}")
             elif decoded.startswith(COMMAND_NEW_COMMAND):
                 command_info = __import__('json').loads(decoded[len(COMMAND_NEW_COMMAND):])
                 self.commands.addCommand(*command_info)

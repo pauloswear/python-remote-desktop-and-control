@@ -48,6 +48,10 @@ class PyQt5ControllerProtocol(QObject):
         self.last_image_size = None
         self.cached_pixmap = None
         
+        # Tile management for tile-based updates
+        self.tile_cache = {}  # Cache of received tiles
+        self.image_size = None  # Size of the full image
+        
         # Connect signals
         self.image_received.connect(self.update_display)
         self.fps_updated.connect(self.update_fps_label)
@@ -330,6 +334,10 @@ class PyQt5ControllerProtocol(QObject):
         # Request first screenshot immediately
         print("Requesting first screenshot...")
         self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
+        
+        # Start the event loop in a separate thread to avoid blocking
+        import threading
+        threading.Thread(target=self.run, daemon=True).start()
     
     def message_received(self, data: bytes):
         """Handle received messages (called from transport thread)"""
@@ -337,19 +345,19 @@ class PyQt5ControllerProtocol(QObject):
             current_time = time.time()
             
             # Calculate and emit FPS
-            if hasattr(self, 'last_received_time'):
-                fps = 1.0 / (current_time - self.last_received_time)
-                self.fps_updated.emit(f"{fps:.1f}")
-                
-                # Send network feedback for adaptive quality
-                self._send_network_feedback(fps)
+            if hasattr(self, 'last_received_time') and self.last_received_time > 0:
+                time_diff = current_time - self.last_received_time
+                if time_diff > 0:
+                    fps = 1.0 / time_diff
+                    self.fps_updated.emit(f"{fps:.1f}")
+                    
+                    # Send network feedback for adaptive quality
+                    self._send_network_feedback(fps)
             
             self.last_received_time = current_time
             
-
-            
-            # Emit signal for image processing (thread-safe)
-            self.image_received.emit(data)
+            # Call update_display directly instead of using signals (threading issues)
+            self.update_display(data)
             
             # Request next screenshot immediately for maximum FPS
             self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
@@ -376,21 +384,15 @@ class PyQt5ControllerProtocol(QObject):
     def update_display(self, data: bytes):
         """Update display with received image data (runs in main thread) - optimized for speed"""
         try:
-            print(f"DEBUG: update_display called with {len(data)} bytes, starts with: {data[:10] if len(data) >= 10 else data}")
-            
             # Fast path processing - minimize checks
             if data.startswith(b'NUMPY'):
-                print("DEBUG: Processing NUMPY data")
                 self.process_numpy_data(data[5:])
             elif data.startswith(b'TILES'):
-                print("DEBUG: Processing TILES data")
                 self._process_tiles(data[5:])
             elif data == b'NO_CHANGE':
-                print("DEBUG: NO_CHANGE received")
                 # No changes, just keep current image
                 pass
             else:
-                print("DEBUG: Processing as JPEG data")
                 self.process_jpeg_data(data)
         except Exception as e:
             # Minimize error handling overhead in hot path
@@ -444,6 +446,8 @@ class PyQt5ControllerProtocol(QObject):
     def _process_tiles(self, data: bytes):
         """Process tile-based updates for PyQt5"""
         try:
+            print(f"DEBUG: Raw tile data length: {len(data)}")
+            
             # Parse header - 3 integers: num_tiles, quality, fps_target
             if len(data) < 12:  # 3 * 4 bytes
                 print(f"DEBUG: Tile data too short: {len(data)} bytes")
@@ -452,32 +456,47 @@ class PyQt5ControllerProtocol(QObject):
             data = data[12:]
             
             print(f"DEBUG: Processing {num_tiles} tiles with quality {quality}, fps_target {fps_target}")
+            print(f"DEBUG: Remaining data after header: {len(data)} bytes")
             
             # Process tiles
             tiles_processed = 0
-            while tiles_processed < num_tiles and len(data) >= 16:
+            tile_index = 0
+            
+            while tile_index < num_tiles and len(data) >= 16:
+                print(f"DEBUG: Processing tile {tile_index + 1}/{num_tiles}, data left: {len(data)}")
+                
                 # Parse tile header
+                if len(data) < 16:
+                    print(f"DEBUG: Not enough data for tile header: {len(data)}")
+                    break
+                    
                 tile_header = data[:16]
                 x, y, tile_width, tile_height = struct.unpack('<IIII', tile_header)
                 data = data[16:]
                 
+                print(f"DEBUG: Tile at ({x},{y}) size ({tile_width},{tile_height})")
+                
                 # Find JPEG data end (look for next tile header or end)
                 jpeg_end = len(data)
-                if tiles_processed < num_tiles - 1:
+                if tile_index < num_tiles - 1:
                     # Look for next tile header (16 bytes of 4 ints)
-                    for i in range(16, len(data) - 16):
-                        if len(data) > i + 16:
+                    for i in range(max(0, len(data) - 100), len(data) - 16):  # Search last 100 bytes
+                        if i >= 0 and len(data) > i + 16:
                             try:
                                 # Check if this looks like coordinates
                                 test_x, test_y, test_w, test_h = struct.unpack('<IIII', data[i:i+16])
-                                if 0 <= test_x <= 10000 and 0 <= test_y <= 10000 and 1 <= test_w <= 200 and 1 <= test_h <= 200:
+                                if (0 <= test_x <= 10000 and 0 <= test_y <= 10000 and 
+                                    1 <= test_w <= 200 and 1 <= test_h <= 200):
                                     jpeg_end = i
+                                    print(f"DEBUG: Found next tile header at offset {i}")
                                     break
                             except:
                                 continue
                 
                 jpeg_data = data[:jpeg_end]
                 data = data[jpeg_end:]
+                
+                print(f"DEBUG: JPEG data size: {len(jpeg_data)} bytes")
                 
                 # Decode tile
                 try:
@@ -495,15 +514,17 @@ class PyQt5ControllerProtocol(QObject):
                             self.image_size = (max_x, max_y)
                         
                         tiles_processed += 1
-                        print(f"DEBUG: Processed tile {tiles_processed}/{num_tiles} at ({x},{y})")
+                        print(f"DEBUG: Successfully processed tile {tiles_processed}/{num_tiles} at ({x},{y})")
                     else:
-                        print(f"Failed to load tile JPEG data at ({x},{y})")
+                        print(f"DEBUG: Failed to load tile JPEG data at ({x},{y}) - invalid JPEG")
                         
                 except Exception as e:
                     print(f"Tile decode error at ({x},{y}): {e}")
                     continue
+                
+                tile_index += 1
             
-            print(f"DEBUG: Processed {tiles_processed} tiles total")
+            print(f"DEBUG: Processed {tiles_processed} tiles total out of {num_tiles}")
             
             # Reconstruct full image from tiles
             self._reconstruct_image_from_tiles()
@@ -695,3 +716,11 @@ class PyQt5ControllerProtocol(QObject):
 def create_pyqt5_controller_protocol():
     """Factory function to create PyQt5 controller protocol"""
     return PyQt5ControllerProtocol()
+
+if __name__ == "__main__":
+    """Run the PyQt5 controller application"""
+    import sys
+    
+    # Create and run the controller
+    controller = PyQt5ControllerProtocol()
+    controller.run()
