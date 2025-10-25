@@ -171,17 +171,17 @@ class ControlleeProtocol(ProtocolBase):
                             return
                 
                 # Full image encoding
-                # Adaptive quality based on FPS target for WebP
+                # Adaptive quality based on FPS target for JPEG
                 fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
                 if fps_target >= 120:
                     quality = 10  # Ultra-low quality for maximum speed
                 elif fps_target >= 60:
-                    quality = 20  # Low quality for high speed
+                    quality = 30  # Low quality for high speed
                 else:
                     quality = 60  # Balanced quality for low latency (30-60 FPS)
                 
-                # Ultra-fast WebP encoding (better compression than JPEG)
-                current_image.save(output, format="WebP", quality=quality, method=0)  # method=0 for fastest encoding
+                # Ultra-fast JPEG encoding for low latency
+                current_image.save(output, format="JPEG", quality=quality, optimize=True)
                 self.writeMessage(output.getvalue())
                 self.last_image = current_image
     

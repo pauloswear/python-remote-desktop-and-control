@@ -421,7 +421,7 @@ class PyQt5ControllerProtocol(QObject):
             
             # Load region pixmap
             region_pixmap = QPixmap()
-            if region_pixmap.loadFromData(region_data):
+            if region_pixmap.loadFromData(region_data, 'JPEG'):
                 # Create painter to apply patch
                 if self.base_image is None:
                     # Fallback: treat as full image
