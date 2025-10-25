@@ -15,6 +15,7 @@ from PyQt5.QtGui import QPixmap, QImage, QPainter
 from PIL import Image, ImageTk
 import numpy as np
 from constants import *
+from raw_transport import RawSocketProtocol
 
 class PyQt5ControllerProtocol(QObject):
     """Ultra-modern PyQt5-based controller with superior performance"""
@@ -25,17 +26,14 @@ class PyQt5ControllerProtocol(QObject):
     
     def __init__(self):
         super().__init__()
+        
+        # Create a RawSocketProtocol instance for delegation
+        self.protocol = RawSocketProtocol()
+        self.protocol.set_message_handler(self.message_received)
+        
         self.app = None
         self.window = None
         self.last_received_time = time.time()
-        self.transport = None
-        
-        # Transport compatibility attributes
-        self._send_worker = None
-        self._receive_worker = None
-        self.socket = None
-        self.running = True
-        self.send_queue = queue.Queue()
         
         # Connect signals
         self.image_received.connect(self.update_display)
@@ -93,7 +91,7 @@ class PyQt5ControllerProtocol(QObject):
         # Image display area
         self.image_label = QLabel()
         self.image_label.setStyleSheet("border: 1px solid #555; background-color: black;")
-        self.image_label.setScaledContents(True)
+        self.image_label.setAlignment(Qt.AlignCenter)  # Center the image
         self.image_label.setMinimumSize(800, 600)
         layout.addWidget(self.image_label)
         
@@ -106,6 +104,12 @@ class PyQt5ControllerProtocol(QObject):
         
         # Focus policy for key events
         self.window.setFocusPolicy(Qt.StrongFocus)
+        
+        # Store original pixmap for resize events
+        self.original_pixmap = None
+        
+        # Override resize event
+        self.window.resizeEvent = self.window_resize_event
         
     def create_control_panel(self, layout):
         """Create the control panel with sliders and settings"""
@@ -191,9 +195,38 @@ class PyQt5ControllerProtocol(QObject):
         self.write_message(to_send)
     
     def get_relative_position(self, x, y):
-        """Convert screen coordinates to relative position"""
-        rect = self.image_label.geometry()
-        return (x / rect.width(), y / rect.height())
+        """Convert screen coordinates to relative position on the actual image"""
+        if not self.original_pixmap:
+            # Fallback to simple calculation
+            rect = self.image_label.geometry()
+            return (x / rect.width(), y / rect.height())
+        
+        # Get the actual displayed pixmap and its position within the label
+        current_pixmap = self.image_label.pixmap()
+        if not current_pixmap:
+            rect = self.image_label.geometry()
+            return (x / rect.width(), y / rect.height())
+        
+        label_rect = self.image_label.rect()
+        pixmap_size = current_pixmap.size()
+        
+        # Calculate the offset where the image starts (due to centering)
+        x_offset = (label_rect.width() - pixmap_size.width()) / 2
+        y_offset = (label_rect.height() - pixmap_size.height()) / 2
+        
+        # Adjust coordinates to be relative to the actual image
+        image_x = x - x_offset
+        image_y = y - y_offset
+        
+        # Ensure coordinates are within image bounds
+        image_x = max(0, min(image_x, pixmap_size.width()))
+        image_y = max(0, min(image_y, pixmap_size.height()))
+        
+        # Convert to relative coordinates (0.0 to 1.0)
+        rel_x = image_x / pixmap_size.width() if pixmap_size.width() > 0 else 0
+        rel_y = image_y / pixmap_size.height() if pixmap_size.height() > 0 else 0
+        
+        return (rel_x, rel_y)
     
     def mouse_press_event(self, event):
         """Handle mouse press events"""
@@ -226,22 +259,19 @@ class PyQt5ControllerProtocol(QObject):
     def set_transport(self, transport):
         """Set the transport for communication"""
         self.transport = transport
-        
-    def set_send_worker(self, send_worker):
-        """Set send worker for compatibility with raw transport"""
-        self._send_worker = send_worker
-        
-    def set_receive_worker(self, receive_worker):
-        """Set receive worker for compatibility with raw transport"""  
-        self._receive_worker = receive_worker
     
     def connection_made(self):
         """Called when connection is established"""
         print("PyQt5 Controller connected!")
         self.window.show()
         
-        # Request first screenshot
-        self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
+        # Request first screenshot with delay to ensure connection is ready
+        def request_screenshot():
+            print("Requesting first screenshot...")
+            self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
+        
+        # Use QTimer to delay the first request
+        QTimer.singleShot(100, request_screenshot)
     
     def message_received(self, data: bytes):
         """Handle received messages (called from transport thread)"""
@@ -254,6 +284,8 @@ class PyQt5ControllerProtocol(QObject):
                 self.fps_updated.emit(f"{fps:.1f}")
             
             self.last_received_time = current_time
+            
+
             
             # Emit signal for image processing (thread-safe)
             self.image_received.emit(data)
@@ -274,6 +306,8 @@ class PyQt5ControllerProtocol(QObject):
                 self.process_jpeg_data(data)
         except Exception as e:
             print(f"Display update error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def process_numpy_data(self, data: bytes):
         """Process numpy array data"""
@@ -294,18 +328,29 @@ class PyQt5ControllerProtocol(QObject):
             else:
                 array_bytes = zlib.decompress(payload_data)
             
-            # Convert to QImage
+            # Convert to numpy array
             img_array = np.frombuffer(array_bytes, dtype=np.uint8).reshape((height, width, channels))
             
-            # Create QImage (RGB format)
-            qimage = QImage(img_array.data, width, height, width * 3, QImage.Format_RGB888)
+            # Handle different channel formats
+            if channels == 4:  # BGRA
+                # Convert BGRA to RGB
+                rgb_array = img_array[:, :, [2, 1, 0]]  # BGR -> RGB
+                qimage = QImage(rgb_array.data, width, height, width * 3, QImage.Format_RGB888)
+            elif channels == 3:  # BGR or RGB
+                # Assume BGR and convert to RGB
+                rgb_array = img_array[:, :, [2, 1, 0]]  # BGR -> RGB
+                qimage = QImage(rgb_array.data, width, height, width * 3, QImage.Format_RGB888)
+            else:
+                return
             
-            # Convert to QPixmap and display
+            # Convert to QPixmap and display with aspect ratio
             pixmap = QPixmap.fromImage(qimage)
-            self.image_label.setPixmap(pixmap)
+            self.set_pixmap_with_aspect_ratio(pixmap)
             
         except Exception as e:
             print(f"Numpy processing error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def process_jpeg_data(self, data: bytes):
         """Process JPEG image data"""
@@ -313,71 +358,119 @@ class PyQt5ControllerProtocol(QObject):
             # Load with PIL first, then convert to Qt
             pil_image = Image.open(io.BytesIO(data))
             
-            # Convert PIL to numpy array
+            # Convert PIL to RGB if needed
             if pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
             
+            # Convert PIL to numpy array
             img_array = np.array(pil_image)
             height, width, channels = img_array.shape
             
+            # Ensure contiguous array
+            img_array = np.ascontiguousarray(img_array)
+            
             # Create QImage
-            qimage = QImage(img_array.data, width, height, width * 3, QImage.Format_RGB888)
+            bytes_per_line = width * 3
+            qimage = QImage(img_array.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            
+            # Verify QImage is valid
+            if qimage.isNull():
+                return
             
             # Convert to QPixmap and display
             pixmap = QPixmap.fromImage(qimage)
-            self.image_label.setPixmap(pixmap)
+            
+            if pixmap.isNull():
+                return
+                
+            self.set_pixmap_with_aspect_ratio(pixmap)
             
         except Exception as e:
             print(f"JPEG processing error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def update_fps_label(self, fps_text):
         """Update FPS label (thread-safe)"""
         self.fps_display.setText(fps_text)
+    
+    def set_pixmap_with_aspect_ratio(self, pixmap):
+        """Set pixmap maintaining aspect ratio"""
+        if pixmap.isNull():
+            return
+        
+        # Store original pixmap
+        self.original_pixmap = pixmap
+        
+        # Get the label size
+        label_size = self.image_label.size()
+        
+        # Scale the pixmap to fit the label while maintaining aspect ratio
+        scaled_pixmap = pixmap.scaled(
+            label_size, 
+            Qt.KeepAspectRatio, 
+            Qt.SmoothTransformation
+        )
+        
+        self.image_label.setPixmap(scaled_pixmap)
+    
+    def window_resize_event(self, event):
+        """Handle window resize events"""
+        # Re-scale the image when window is resized
+        if self.original_pixmap:
+            self.set_pixmap_with_aspect_ratio(self.original_pixmap)
+        
+        # Call the original resize event
+        QMainWindow.resizeEvent(self.window, event)
     
     def run(self):
         """Run the PyQt5 application"""
         if self.app:
             self.app.exec_()
     
-    def _send_worker(self):
-        """Send worker thread for raw socket compatibility"""
-        while getattr(self, 'running', True):
-            try:
-                if hasattr(self, 'send_queue') and not self.send_queue.empty():
-                    data = self.send_queue.get()
-                    if hasattr(self, 'socket') and data:
-                        self.socket.sendall(data)
-                else:
-                    time.sleep(0.001)  # Small delay to prevent busy waiting
-            except Exception as e:
-                print(f"Send worker error: {e}")
-                break
-    
-    def _receive_worker(self):
-        """Receive worker thread for raw socket compatibility"""
-        while getattr(self, 'running', True):
-            try:
-                if hasattr(self, 'socket'):
-                    data = self.socket.recv(8192)
-                    if data:
-                        self.message_received(data)
-                    else:
-                        break
-            except Exception as e:
-                print(f"Receive worker error: {e}")
-                break
+
     
     def write_message(self, data):
-        """Write message via socket (compatibility method)"""
-        try:
-            if hasattr(self, 'socket'):
-                self.socket.sendall(data)
-        except Exception as e:
-            print(f"Write message error: {e}")
+        """Delegate to protocol"""
+        if self.protocol:
+            self.protocol.write_message(data)
+    
+    def _send_worker(self):
+        """Delegate to protocol"""
+        if self.protocol:
+            return self.protocol._send_worker()
+    
+    def _receive_worker(self):
+        """Delegate to protocol"""
+        if self.protocol:
+            return self.protocol._receive_worker()
+    
+    @property
+    def socket(self):
+        """Get socket from protocol"""
+        return self.protocol.socket if self.protocol else None
+    
+    @socket.setter
+    def socket(self, value):
+        """Set socket on protocol"""
+        if self.protocol:
+            self.protocol.socket = value
+    
+    @property
+    def running(self):
+        """Get running state from protocol"""
+        return self.protocol.running if self.protocol else False
+    
+    @running.setter
+    def running(self, value):
+        """Set running state on protocol"""
+        if self.protocol:
+            self.protocol.running = value
     
     def stop(self):
         """Stop the application"""
-        self.running = False
+        if self.protocol:
+            self.protocol.stop()
         if self.window:
             self.window.close()
         if self.app:
