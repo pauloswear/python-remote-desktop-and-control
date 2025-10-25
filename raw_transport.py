@@ -19,7 +19,7 @@ class RawSocketProtocol:
         self.send_queue = queue.Queue()
         self.receive_buffer = b''
         self.message_handler: Optional[Callable] = None
-        self.is_udp = True  # Use UDP for maximum speed
+        self.is_udp = False  # Temporarily use TCP for testing
         self.remote_addr = None
         
     def set_message_handler(self, handler: Callable):
@@ -127,7 +127,7 @@ class RawSocketServer(RawSocketProtocol):
         self.protocol_args = protocol_args or []
         self.server_socket = None
         self.client_protocol = None
-        self.is_udp = True  # Force UDP
+        self.is_udp = False  # Temporarily use TCP
         
     def start(self):
         """Start the server"""
@@ -251,7 +251,7 @@ class RawSocketClient(RawSocketProtocol):
         self.protocol_class = protocol_class
         self.protocol_args = protocol_args or []
         self.protocol_instance = None
-        self.is_udp = True  # Force UDP
+        self.is_udp = False  # Temporarily use TCP
         
     def connect(self):
         """Connect to server"""
