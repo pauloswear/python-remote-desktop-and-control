@@ -5,13 +5,13 @@ VAR_MONITOR_DEFAULT = 0
 VAR_SHOULD_UPDATE_COMMANDS = 'update_commands'
 VAR_SHOULD_UPDATE_COMMANDS_DEFAULT = True
 VAR_FPS = 'fps'
-VAR_FPS_DEFAULT = 120  # Ultra-high FPS for minimum latency
+VAR_FPS_DEFAULT = 30  # Balanced FPS for high quality
 VAR_JPEG_QUALITY = 'jpeg_quality'
-VAR_JPEG_QUALITY_DEFAULT = 15  # Very low quality for maximum speed
+VAR_JPEG_QUALITY_DEFAULT = 95  # High quality for better image fidelity
 VAR_USE_NUMPY = 'use_numpy'
 VAR_USE_NUMPY_DEFAULT = False  # JPEG is faster for most cases
 VAR_COMPRESSION_LEVEL = 'compression_level'
-VAR_COMPRESSION_LEVEL_DEFAULT = 3
+VAR_COMPRESSION_LEVEL_DEFAULT = 6  # Higher compression for numpy
 VAR_USE_RAW_SOCKETS = 'use_raw_sockets'
 VAR_USE_RAW_SOCKETS_DEFAULT = True
 

@@ -159,7 +159,7 @@ class ControlleeProtocol(ProtocolBase):
                 elif fps_target >= 60:
                     quality = 20  # Low quality for high speed
                 else:
-                    quality = max(10, self.config.get(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT) - 10)  # Slightly lower for WebP's better compression
+                    quality = 80  # High quality for balanced FPS (30-60)
                 
                 # Ultra-fast WebP encoding (better compression than JPEG)
                 ss.save(output, format="WebP", quality=quality, method=0)  # method=0 for fastest encoding
