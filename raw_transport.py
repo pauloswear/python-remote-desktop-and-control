@@ -1,5 +1,6 @@
 """
 High-performance socket-based transport for ultra-low latency
+Uses TCP for reliability with optimized settings for low latency
 """
 import socket
 import threading
@@ -231,7 +232,7 @@ class RawSocketServer(RawSocketProtocol):
         self.protocol_args = protocol_args or []
         self.server_socket = None
         self.client_protocol = None
-        self.is_udp = True  # Use UDP for lower latency
+        self.is_udp = False  # Use TCP for reliability
         
     def start(self):
         """Start the server"""
@@ -396,7 +397,7 @@ class RawSocketClient(RawSocketProtocol):
         self.protocol_class = protocol_class
         self.protocol_args = protocol_args or []
         self.protocol_instance = None
-        self.is_udp = True  # Use UDP for lower latency
+        self.is_udp = False  # Use TCP for reliability
         
     def connect(self):
         """Connect to server"""
@@ -450,15 +451,17 @@ class RawSocketClient(RawSocketProtocol):
         return self.protocol_instance
 
 # Factory functions to match the existing interface
-def create_raw_socket_server(port: int, protocol_class, protocol_args=None):
+def create_raw_socket_server(port: int, protocol_class, protocol_args=None, use_udp=False):
     """Create a raw socket server"""
     server = RawSocketServer(port, protocol_class, protocol_args)
+    server.is_udp = use_udp
     server.start()
     return server
 
-def create_raw_socket_client(host: str, port: int, protocol_class, protocol_args=None):
+def create_raw_socket_client(host: str, port: int, protocol_class, protocol_args=None, use_udp=False):
     """Create a raw socket client"""
     client = RawSocketClient(host, port, protocol_class, protocol_args)
+    client.is_udp = use_udp
     protocol_instance = client.connect()
     
     # Expose protocol instance through client for access
