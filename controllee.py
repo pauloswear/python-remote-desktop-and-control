@@ -22,14 +22,14 @@ class ControlleeProtocol(ProtocolBase):
         self.screenshot_interval = 1.0 / VAR_FPS_DEFAULT  # Default 120 FPS
         self.screenshot_lock = threading.Lock()
         self.is_processing_screenshot = False
+        self.last_image = None  # For delta encoding
 
         self.setVariable(VAR_SCALE, VAR_SCALE_DEFAULT, False)
         self.setVariable(VAR_MONITOR, VAR_MONITOR_DEFAULT, False)
         self.setVariable(VAR_SHOULD_UPDATE_COMMANDS, VAR_SHOULD_UPDATE_COMMANDS_DEFAULT, False)
         self.setVariable(VAR_FPS, VAR_FPS_DEFAULT, False)
         self.setVariable(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT, False)
-        self.setVariable(VAR_USE_NUMPY, VAR_USE_NUMPY_DEFAULT, False)
-        self.setVariable(VAR_COMPRESSION_LEVEL, VAR_COMPRESSION_LEVEL_DEFAULT, False)
+        self.setVariable(VAR_USE_DELTA, VAR_USE_DELTA_DEFAULT, False)
         self.printConfig()
 
         reactor.callLater(0.001, self.sendScreenshot)  # Start immediately
@@ -136,7 +136,7 @@ class ControlleeProtocol(ProtocolBase):
             self.writeMessage(message_data)
 
     def sendScreenshotJPEG(self):
-        """Optimized WebP method for maximum FPS and better compression"""
+        """Optimized WebP method with delta encoding for maximum FPS and better compression"""
         with io.BytesIO() as output:
             with mss() as sct:
                 monitorRequest = self.config[VAR_MONITOR]
@@ -144,14 +144,33 @@ class ControlleeProtocol(ProtocolBase):
                 ss = sct.grab(sct.monitors[monitorRequest])
                 
                 # Ultra-fast PIL conversion
-                ss = PIL.Image.frombytes('RGB', ss.size, ss.bgra, 'raw', 'BGRX')
+                current_image = PIL.Image.frombytes('RGB', ss.size, ss.bgra, 'raw', 'BGRX')
                 
                 # Optimized scaling
                 if self.config[VAR_SCALE] < 1:
-                    new_size = (int(ss.size[0] * self.config[VAR_SCALE]),
-                               int(ss.size[1] * self.config[VAR_SCALE]))
-                    ss = ss.resize(new_size, PIL.Image.NEAREST)  # NEAREST is fastest
+                    new_size = (int(current_image.size[0] * self.config[VAR_SCALE]),
+                               int(current_image.size[1] * self.config[VAR_SCALE]))
+                    current_image = current_image.resize(new_size, PIL.Image.NEAREST)  # NEAREST is fastest
                 
+                # Delta encoding
+                use_delta = self.config.get(VAR_USE_DELTA, VAR_USE_DELTA_DEFAULT)
+                if use_delta and self.last_image and current_image.size == self.last_image.size:
+                    # Calculate difference
+                    diff = PIL.ImageChops.difference(current_image, self.last_image)
+                    bbox = diff.getbbox()
+                    if bbox:
+                        area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                        if area < 50000:  # Small change area, send delta
+                            region = current_image.crop(bbox)
+                            region.save(output, format="WebP", quality=95, method=0)
+                            region_data = output.getvalue()
+                            # Send delta: 'DELTA' + bbox + data
+                            delta_data = b'DELTA' + struct.pack('<IIII', bbox[0], bbox[1], bbox[2], bbox[3]) + region_data
+                            self.writeMessage(delta_data)
+                            self.last_image = current_image
+                            return
+                
+                # Full image encoding
                 # Adaptive quality based on FPS target for WebP
                 fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
                 if fps_target >= 120:
@@ -162,8 +181,9 @@ class ControlleeProtocol(ProtocolBase):
                     quality = 80  # High quality for balanced FPS (30-60)
                 
                 # Ultra-fast WebP encoding (better compression than JPEG)
-                ss.save(output, format="WebP", quality=quality, method=0)  # method=0 for fastest encoding
+                current_image.save(output, format="WebP", quality=quality, method=0)  # method=0 for fastest encoding
                 self.writeMessage(output.getvalue())
+                self.last_image = current_image
     
     def connectionLost(self, reason):
         self.commands.shouldRun = False

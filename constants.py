@@ -12,6 +12,8 @@ VAR_USE_NUMPY = 'use_numpy'
 VAR_USE_NUMPY_DEFAULT = False  # JPEG is faster for most cases
 VAR_COMPRESSION_LEVEL = 'compression_level'
 VAR_COMPRESSION_LEVEL_DEFAULT = 6  # Higher compression for numpy
+VAR_USE_DELTA = 'use_delta'
+VAR_USE_DELTA_DEFAULT = True  # Use delta encoding for better FPS
 VAR_USE_RAW_SOCKETS = 'use_raw_sockets'
 VAR_USE_RAW_SOCKETS_DEFAULT = True
 

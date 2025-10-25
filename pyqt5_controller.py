@@ -137,6 +137,7 @@ class PyQt5ControllerProtocol(QObject):
         
         # Store original pixmap for resize events
         self.original_pixmap = None
+        self.base_image = None  # For delta encoding
         
         # Override resize event
         self.window.resizeEvent = self.window_resize_event
@@ -409,14 +410,40 @@ class PyQt5ControllerProtocol(QObject):
             traceback.print_exc()
     
     def process_jpeg_data(self, data: bytes):
-        """Process image data (WebP/JPEG) - ultra-optimized for minimum latency"""
-        # Direct QPixmap loading - fastest possible method with auto-detection
-        pixmap = QPixmap()
-        if pixmap.loadFromData(data):
-            self.original_pixmap = pixmap
+        """Process image data (WebP/JPEG) or delta updates - ultra-optimized for minimum latency"""
+        if data.startswith(b'DELTA'):
+            # Delta update: apply patch to base image
+            import struct
+            header_size = 4 * 4  # 4 ints for bbox
+            bbox_data = data[5:5+header_size]
+            x1, y1, x2, y2 = struct.unpack('<IIII', bbox_data)
+            region_data = data[5+header_size:]
             
-            # Skip aspect ratio calculation for maximum speed - direct display
-            self.image_label.setPixmap(pixmap)
+            # Load region pixmap
+            region_pixmap = QPixmap()
+            if region_pixmap.loadFromData(region_data):
+                # Create painter to apply patch
+                if self.base_image is None:
+                    # Fallback: treat as full image
+                    self.original_pixmap = region_pixmap
+                    self.image_label.setPixmap(region_pixmap)
+                    return
+                
+                # Apply patch to base image
+                painter = QPainter(self.base_image)
+                painter.drawPixmap(x1, y1, region_pixmap)
+                painter.end()
+                
+                # Update display
+                self.original_pixmap = QPixmap.fromImage(self.base_image)
+                self.image_label.setPixmap(self.original_pixmap)
+        else:
+            # Full image
+            pixmap = QPixmap()
+            if pixmap.loadFromData(data):
+                self.original_pixmap = pixmap
+                self.base_image = pixmap.toImage()  # Store as QImage for patching
+                self.image_label.setPixmap(pixmap)
     
     def update_fps_label(self, fps_text):
         """Update FPS label (thread-safe)"""
