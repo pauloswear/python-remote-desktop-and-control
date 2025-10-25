@@ -127,6 +127,7 @@ class RawSocketServer(RawSocketProtocol):
         self.protocol_args = protocol_args or []
         self.server_socket = None
         self.client_protocol = None
+        self.is_udp = True  # Force UDP
         
     def start(self):
         """Start the server"""
@@ -247,6 +248,7 @@ class RawSocketClient(RawSocketProtocol):
         self.protocol_class = protocol_class
         self.protocol_args = protocol_args or []
         self.protocol_instance = None
+        self.is_udp = True  # Force UDP
         
     def connect(self):
         """Connect to server"""
