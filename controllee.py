@@ -80,8 +80,8 @@ class ControlleeProtocol(ProtocolBase):
                     scale = self.config.get(VAR_SCALE, VAR_SCALE_DEFAULT)
                     
                     # Smart selection based on resolution and FPS
-                    if use_numpy and scale <= 0.5 and fps_target >= 90:
-                        # Low resolution + high FPS: numpy might be better
+                    if use_numpy:
+                        # Use numpy for faster transmission
                         self.sendScreenshotNumpy()
                     else:
                         # Default to optimized JPEG (generally faster)
