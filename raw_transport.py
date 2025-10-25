@@ -139,11 +139,14 @@ class RawSocketServer(RawSocketProtocol):
             # Start receive thread
             threading.Thread(target=self._udp_receive_loop, daemon=True).start()
         else:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
             # Ultra-low latency socket options
-            self.server_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            try:
+                self.server_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass  # May not be supported on all systems
             
             self.server_socket.bind(('0.0.0.0', self.port))
             self.server_socket.listen(1)
@@ -201,9 +204,18 @@ class RawSocketServer(RawSocketProtocol):
                 print(f"Raw socket client connected: {addr}")
                 
                 # Ultra-aggressive socket optimization for minimum latency
-                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # No Nagle
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)  # 512KB send buffer
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB receive buffer
+                try:
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # No Nagle
+                except OSError:
+                    pass
+                try:
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)  # 512KB send buffer
+                except OSError:
+                    pass
+                try:
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB receive buffer
+                except OSError:
+                    pass
                 
                 # Additional low-latency optimizations
                 try:
@@ -255,10 +267,19 @@ class RawSocketClient(RawSocketProtocol):
         
     def connect(self):
         """Connect to server"""
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind(('0.0.0.0', 0))  # Bind to random port for receiving
-        self.remote_addr = (self.host, self.port)
-        print(f"UDP client bound to random port, ready to connect to {self.host}:{self.port}")
+        if self.is_udp:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.socket.bind(('0.0.0.0', 0))  # Bind to random port for receiving
+            self.remote_addr = (self.host, self.port)
+            print(f"UDP client bound to random port, ready to connect to {self.host}:{self.port}")
+        else:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.socket.connect((self.host, self.port))
+            print(f"TCP client connected to {self.host}:{self.port}")
         
         # Create protocol instance
         if callable(self.protocol_class):
