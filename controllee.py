@@ -136,7 +136,7 @@ class ControlleeProtocol(ProtocolBase):
             self.writeMessage(message_data)
 
     def sendScreenshotJPEG(self):
-        """Optimized JPEG method for maximum FPS"""
+        """Optimized WebP method for maximum FPS and better compression"""
         with io.BytesIO() as output:
             with mss() as sct:
                 monitorRequest = self.config[VAR_MONITOR]
@@ -152,17 +152,17 @@ class ControlleeProtocol(ProtocolBase):
                                int(ss.size[1] * self.config[VAR_SCALE]))
                     ss = ss.resize(new_size, PIL.Image.NEAREST)  # NEAREST is fastest
                 
-                # Adaptive quality based on FPS target
+                # Adaptive quality based on FPS target for WebP
                 fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
                 if fps_target >= 120:
-                    quality = 15  # Ultra-low quality for maximum speed
+                    quality = 10  # Ultra-low quality for maximum speed
                 elif fps_target >= 60:
-                    quality = 25  # Low quality for high speed
+                    quality = 20  # Low quality for high speed
                 else:
-                    quality = self.config.get(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT)
+                    quality = max(10, self.config.get(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT) - 10)  # Slightly lower for WebP's better compression
                 
-                # Ultra-fast JPEG encoding
-                ss.save(output, format="JPEG", quality=quality, optimize=False)
+                # Ultra-fast WebP encoding (better compression than JPEG)
+                ss.save(output, format="WebP", quality=quality, method=0)  # method=0 for fastest encoding
                 self.writeMessage(output.getvalue())
     
     def connectionLost(self, reason):
