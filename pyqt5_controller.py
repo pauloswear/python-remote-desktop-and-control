@@ -409,10 +409,10 @@ class PyQt5ControllerProtocol(QObject):
             traceback.print_exc()
     
     def process_jpeg_data(self, data: bytes):
-        """Process WebP image data - ultra-optimized for minimum latency"""
-        # Direct QPixmap loading - fastest possible method
+        """Process image data (WebP/JPEG) - ultra-optimized for minimum latency"""
+        # Direct QPixmap loading - fastest possible method with auto-detection
         pixmap = QPixmap()
-        if pixmap.loadFromData(data, 'WEBP'):
+        if pixmap.loadFromData(data):
             self.original_pixmap = pixmap
             
             # Skip aspect ratio calculation for maximum speed - direct display
