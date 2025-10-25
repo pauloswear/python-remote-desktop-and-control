@@ -19,7 +19,7 @@ class RawSocketProtocol:
         self.send_queue = queue.Queue()
         self.receive_buffer = b''
         self.message_handler: Optional[Callable] = None
-        self.is_udp = True  # Temporarily use TCP for testing
+        self.is_udp = True  # Use UDP for lower latency
         self.remote_addr = None
         
     def set_message_handler(self, handler: Callable):
@@ -127,7 +127,7 @@ class RawSocketServer(RawSocketProtocol):
         self.protocol_args = protocol_args or []
         self.server_socket = None
         self.client_protocol = None
-        self.is_udp = False  # Temporarily use TCP
+        self.is_udp = True  # Use UDP for lower latency
         
     def start(self):
         """Start the server"""
@@ -161,6 +161,35 @@ class RawSocketServer(RawSocketProtocol):
         while True:
             try:
                 data, addr = self.server_socket.recvfrom(131072)
+                
+                # Handle handshake messages
+                if data == b'HANDSHAKE':
+                    print(f"UDP handshake received from {addr}")
+                    if self.client_protocol is None:
+                        # Create protocol on handshake
+                        if callable(self.protocol_class):
+                            if self.protocol_args:
+                                self.client_protocol = self.protocol_class(*self.protocol_args)
+                            else:
+                                self.client_protocol = self.protocol_class()
+                        else:
+                            self.client_protocol = self.protocol_class()
+                        
+                        self.client_protocol.socket = self.server_socket
+                        self.client_protocol.remote_addr = addr
+                        # If protocol has delegated protocol
+                        if hasattr(self.client_protocol, 'protocol'):
+                            self.client_protocol.protocol.remote_addr = addr
+                        self.client_protocol.running = True
+                        
+                        # Start send worker
+                        threading.Thread(target=self.client_protocol._send_worker, daemon=True).start()
+                        
+                        # Protocol-specific initialization
+                        if hasattr(self.client_protocol, 'connection_made'):
+                            self.client_protocol.connection_made()
+                    continue  # Don't pass handshake to message handler
+                
                 if self.client_protocol is None:
                     # Create protocol on first message
                     if callable(self.protocol_class):
@@ -263,7 +292,7 @@ class RawSocketClient(RawSocketProtocol):
         self.protocol_class = protocol_class
         self.protocol_args = protocol_args or []
         self.protocol_instance = None
-        self.is_udp = False  # Temporarily use TCP
+        self.is_udp = True  # Use UDP for lower latency
         
     def connect(self):
         """Connect to server"""
@@ -272,6 +301,14 @@ class RawSocketClient(RawSocketProtocol):
             self.socket.bind(('0.0.0.0', 0))  # Bind to random port for receiving
             self.remote_addr = (self.host, self.port)
             print(f"UDP client bound to random port, ready to connect to {self.host}:{self.port}")
+            
+            # For UDP, send initial handshake message to establish connection
+            # This allows the server to know our address and start responding
+            try:
+                self.socket.sendto(b'HANDSHAKE', self.remote_addr)
+                print("UDP handshake sent")
+            except Exception as e:
+                print(f"UDP handshake failed: {e}")
         else:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
