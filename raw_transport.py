@@ -253,48 +253,32 @@ class RawSocketClient(RawSocketProtocol):
     def connect(self):
         """Connect to server"""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.remote_addr = (self.host, self.port)
+        print(f"UDP client ready to connect to {self.host}:{self.port}")
         
-        # Ultra-aggressive client socket optimization
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # No Nagle
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)  # 512KB send buffer  
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB receive buffer
-        
-        # Additional low-latency optimizations
-        try:
-            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)  # Quick ACK
-        except (AttributeError, OSError):
-            pass  # Not available on all platforms
-        
-        try:
-            self.socket.connect((self.host, self.port))
-            print(f"Raw socket connected to {self.host}:{self.port}")
-            
-            # Create protocol instance
-            if callable(self.protocol_class):
-                if self.protocol_args:
-                    self.protocol_instance = self.protocol_class(*self.protocol_args)
-                else:
-                    self.protocol_instance = self.protocol_class()
+        # Create protocol instance
+        if callable(self.protocol_class):
+            if self.protocol_args:
+                self.protocol_instance = self.protocol_class(*self.protocol_args)
             else:
-                # It's a factory function
                 self.protocol_instance = self.protocol_class()
-                
-            self.protocol_instance.socket = self.socket
-            self.protocol_instance.running = True
+        else:
+            # It's a factory function
+            self.protocol_instance = self.protocol_class()
             
-            # Start worker threads
-            threading.Thread(target=self.protocol_instance._send_worker, daemon=True).start()
-            threading.Thread(target=self.protocol_instance._receive_worker, daemon=True).start()
+        self.protocol_instance.socket = self.socket
+        self.protocol_instance.remote_addr = self.remote_addr
+        self.protocol_instance.running = True
+        
+        # Start worker threads
+        threading.Thread(target=self.protocol_instance._send_worker, daemon=True).start()
+        threading.Thread(target=self.protocol_instance._receive_worker, daemon=True).start()
+        
+        # Protocol-specific initialization
+        if hasattr(self.protocol_instance, 'connection_made'):
+            self.protocol_instance.connection_made()
             
-            # Protocol-specific initialization
-            if hasattr(self.protocol_instance, 'connection_made'):
-                self.protocol_instance.connection_made()
-                
-            return self.protocol_instance
-            
-        except Exception as e:
-            print(f"Connection error: {e}")
-            return None
+        return self.protocol_instance
 
 # Factory functions to match the existing interface
 def create_raw_socket_server(port: int, protocol_class, protocol_args=None):
