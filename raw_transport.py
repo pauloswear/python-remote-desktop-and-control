@@ -412,9 +412,15 @@ class RawSocketClient(RawSocketProtocol):
                 self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
-                # Low-latency TCP options
-                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
-                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')
+                # Low-latency TCP options (may not be available on all platforms)
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+                except AttributeError:
+                    pass  # TCP_QUICKACK not available on Windows
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')
+                except AttributeError:
+                    pass  # TCP_CONGESTION not available on Windows
             except OSError as e:
                 print(f"Client socket optimization warning: {e}")
             self.socket.connect((self.host, self.port))
