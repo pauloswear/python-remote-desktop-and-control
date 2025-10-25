@@ -198,8 +198,6 @@ class RawControlleeProtocol(RawSocketProtocol):
     
     def _send_changed_tiles(self, img, changed_tiles):
         """Send only the changed tiles with optimized encoding"""
-        print(f"DEBUG: Sending {len(changed_tiles)} changed tiles")
-        
         # Adaptive quality based on number of changed tiles and target FPS
         num_changed = len(changed_tiles)
         fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
@@ -224,14 +222,12 @@ class RawControlleeProtocol(RawSocketProtocol):
         else:  # Many changes
             quality = max(10, base_quality - 15)  # Lower quality for speed
         
-        print(f"DEBUG: Using quality {quality}, change_ratio {change_ratio:.3f}")
-        
         # Send tile update header with quality info
         header = struct.pack('<III', len(changed_tiles), quality, int(fps_target))
         self.write_message(b'TILES' + header)
         
         # Send each changed tile with optimized encoding
-        for i, (x, y, tile_width, tile_height, tile_key) in enumerate(changed_tiles):
+        for x, y, tile_width, tile_height, tile_key in changed_tiles:
             tile = img.crop((x, y, x + tile_width, y + tile_height))
             
             # Ultra-fast encoding optimized for tiles
@@ -244,7 +240,22 @@ class RawControlleeProtocol(RawSocketProtocol):
                 
                 tile_data = output.getvalue()
             
-            print(f"DEBUG: Tile {i}: pos=({x},{y}) size=({tile_width},{tile_height}) data_size={len(tile_data)}")
+            # Limit tile data size to prevent connection issues
+            max_tile_size = 8192  # 8KB max per tile
+            if len(tile_data) > max_tile_size:
+                # If tile is too large, reduce quality further
+                reduced_quality = max(10, quality - 20)
+                with io.BytesIO() as output:
+                    tile.save(output, format="JPEG", 
+                             quality=reduced_quality, 
+                             optimize=False,
+                             progressive=False,
+                             subsampling=2)
+                    tile_data = output.getvalue()
+                
+                if len(tile_data) > max_tile_size:
+                    # Still too large, skip this tile
+                    continue
             
             # Send tile header + data
             tile_header = struct.pack('<IIII', x, y, tile_width, tile_height)
@@ -496,20 +507,15 @@ class RawControllerProtocol(RawSocketProtocol):
     def message_received(self, data: bytes):
         """Handle received screenshots and tiles"""
         try:
-            print(f"DEBUG Controller: Received {len(data)} bytes, starts with: {data[:20] if len(data) >= 20 else data}")
-            
             current_time = time.time()
             
             if data == b'NO_CHANGE':
-                print("DEBUG Controller: NO_CHANGE message")
                 # No changes, just update FPS
                 pass
             elif data.startswith(b'TILES'):
-                print("DEBUG Controller: Processing TILES message")
                 # Tile-based update
                 self._process_tiles(data[5:])
             else:
-                print("DEBUG Controller: Processing as JPEG data")
                 # Legacy full image
                 self.process_jpeg_data(data)
             
@@ -524,13 +530,10 @@ class RawControllerProtocol(RawSocketProtocol):
             self.last_received_time = current_time
             
             # Request next screenshot immediately
-            print("DEBUG Controller: Requesting next screenshot")
             self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
             
         except Exception as e:
             print(f"Controller message error: {e}")
-            import traceback
-            traceback.print_exc()
             # Still request next screenshot
             self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
     
