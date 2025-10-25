@@ -340,22 +340,14 @@ class RawSocketServer(RawSocketProtocol):
                 # Ultra-aggressive socket optimization for minimum latency
                 try:
                     client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # No Nagle
-                except OSError:
-                    pass
-                try:
-                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)  # 512KB send buffer
-                except OSError:
-                    pass
-                try:
-                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB receive buffer
-                except OSError:
-                    pass
-                
-                # Additional low-latency optimizations
-                try:
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
+                    # Additional low-latency TCP options
                     client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)  # Quick ACK
-                except (AttributeError, OSError):
-                    pass  # Not available on all platforms
+                    # Disable TCP slow start and congestion control for local networks
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')  # Use Reno for lower latency
+                except OSError as e:
+                    print(f"Socket optimization warning: {e}")
                 
                 # Set socket to non-blocking for faster operations
                 client_socket.setblocking(True)  # Keep blocking for simplicity but optimize
@@ -418,8 +410,13 @@ class RawSocketClient(RawSocketProtocol):
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except OSError:
-                pass
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
+                # Low-latency TCP options
+                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'reno')
+            except OSError as e:
+                print(f"Client socket optimization warning: {e}")
             self.socket.connect((self.host, self.port))
             print(f"TCP client connected to {self.host}:{self.port}")
         

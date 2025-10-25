@@ -33,6 +33,14 @@ class RawControlleeProtocol(RawSocketProtocol):
         self.is_processing_screenshot = False
         self.screenshot_thread = None
         
+        # Adaptive quality control
+        self.network_stats = {
+            'rtt_samples': [],
+            'fps_history': [],
+            'last_quality_adjustment': 0,
+            'current_quality_offset': 0
+        }
+        
         # Initialize config
         self.set_variable(VAR_SCALE, VAR_SCALE_DEFAULT, False)
         self.set_variable(VAR_MONITOR, VAR_MONITOR_DEFAULT, False)
@@ -121,40 +129,93 @@ class RawControlleeProtocol(RawSocketProtocol):
             
             self.write_message(message_data)
     
-    def send_screenshot_jpeg(self):
-        """Ultra-optimized JPEG implementation for minimum latency"""
-        with mss() as sct:
-            monitor_idx = min(self.config[VAR_MONITOR], len(sct.monitors) - 1)
-            ss = sct.grab(sct.monitors[monitor_idx])
-            
-            # Direct RGB conversion without intermediate steps
-            img = PIL.Image.frombytes('RGB', ss.size, ss.bgra, 'raw', 'BGRX')
-            
-            # Scale only if necessary
-            scale = self.config[VAR_SCALE]
-            if scale < 1.0:
-                new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
-                # Use NEAREST for fastest scaling
-                img = img.resize(new_size, PIL.Image.NEAREST)
-            
-            # Ultra-aggressive JPEG settings for speed
-            fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
-            if fps_target >= 60:
-                quality = 15  # Very low quality for max speed
-                subsampling = 2  # Aggressive subsampling
-            else:
-                quality = self.config.get(VAR_JPEG_QUALITY, VAR_JPEG_QUALITY_DEFAULT)
-                subsampling = 0
-            
-            # Direct to bytes without intermediate BytesIO
-            with io.BytesIO() as output:
-                img.save(output, format="JPEG", 
-                        quality=quality, 
-                        optimize=False,  # Disable optimization for speed
-                        progressive=False,  # Disable progressive for speed
-                        subsampling=subsampling)
+    def _get_changed_tiles(self, img):
+        """Detect which tiles have changed using hash comparison and cache static tiles"""
+        width, height = img.size
+        changed_tiles = []
+        current_time = time.time()
+        
+        for y in range(0, height, self.tile_size):
+            for x in range(0, width, self.tile_size):
+                # Define tile bounds
+                tile_width = min(self.tile_size, width - x)
+                tile_height = min(self.tile_size, height - y)
                 
-                self.write_message(output.getvalue())
+                # Extract tile
+                tile = img.crop((x, y, x + tile_width, y + tile_height))
+                
+                # Create hash for change detection
+                tile_hash = hash(tile.tobytes())
+                tile_key = (x // self.tile_size, y // self.tile_size)
+                
+                # Check if tile changed
+                if tile_key not in self.last_tiles or self.last_tiles[tile_key] != tile_hash:
+                    changed_tiles.append((x, y, tile_width, tile_height, tile_key))
+                    self.last_tiles[tile_key] = tile_hash
+                    self.tile_timestamps[tile_key] = current_time
+                else:
+                    # Tile hasn't changed, check if it's become static
+                    if tile_key in self.tile_timestamps:
+                        time_since_change = current_time - self.tile_timestamps[tile_key]
+                        if time_since_change > self.static_tile_threshold:
+                            # Mark as static - don't send anymore
+                            continue
+                    
+                    # Still send occasionally to ensure sync
+                    if tile_key not in self.tile_timestamps or (current_time - self.tile_timestamps.get(tile_key, 0)) > 30.0:
+                        # Send every 30 seconds to maintain sync
+                        changed_tiles.append((x, y, tile_width, tile_height, tile_key))
+                        self.tile_timestamps[tile_key] = current_time
+        
+        return changed_tiles
+    
+    def _send_changed_tiles(self, img, changed_tiles):
+        """Send only the changed tiles with optimized encoding"""
+        # Adaptive quality based on number of changed tiles and target FPS
+        num_changed = len(changed_tiles)
+        fps_target = self.config.get(VAR_FPS, VAR_FPS_DEFAULT)
+        
+        # Calculate change ratio for adaptive quality
+        total_tiles = ((img.size[0] + self.tile_size - 1) // self.tile_size) * ((img.size[1] + self.tile_size - 1) // self.tile_size)
+        change_ratio = num_changed / max(total_tiles, 1)
+        
+        # Adaptive quality: higher for fewer changes, lower for high FPS targets
+        if fps_target >= 120:
+            base_quality = 20  # Very low quality for max speed
+        elif fps_target >= 60:
+            base_quality = 35  # Low quality for high speed
+        else:
+            base_quality = 60  # Balanced quality
+        
+        # Adjust quality based on change ratio
+        if change_ratio < 0.05:  # Very few changes
+            quality = min(95, base_quality + 30)  # Higher quality for better compression
+        elif change_ratio < 0.2:  # Moderate changes
+            quality = base_quality
+        else:  # Many changes
+            quality = max(10, base_quality - 15)  # Lower quality for speed
+        
+        # Send tile update header with quality info
+        header = struct.pack('<III', len(changed_tiles), quality, int(fps_target))
+        self.write_message(b'TILES' + header)
+        
+        # Send each changed tile with optimized encoding
+        for x, y, tile_width, tile_height, tile_key in changed_tiles:
+            tile = img.crop((x, y, x + tile_width, y + tile_height))
+            
+            # Ultra-fast encoding optimized for tiles
+            with io.BytesIO() as output:
+                tile.save(output, format="JPEG", 
+                         quality=quality, 
+                         optimize=False,  # Skip optimization for speed
+                         progressive=False,  # Disable progressive for speed
+                         subsampling=2 if quality < 50 else 0)  # Aggressive subsampling for low quality
+                
+                tile_data = output.getvalue()
+            
+            # Send tile header + data
+            tile_header = struct.pack('<IIII', x, y, tile_width, tile_height)
+            self.write_message(tile_header + tile_data)
     
     def message_received(self, data: bytes):
         """Handle received messages"""
@@ -169,8 +230,36 @@ class RawControlleeProtocol(RawSocketProtocol):
             elif decoded.startswith(COMMAND_NEW_COMMAND):
                 command_info = __import__('json').loads(decoded[len(COMMAND_NEW_COMMAND):])
                 self.commands.addCommand(*command_info)
+            elif decoded.startswith("NET_FEEDBACK:"):
+                # Process network feedback for adaptive quality
+                parts = decoded.split(":")
+                if len(parts) >= 3:
+                    quality_adjustment = int(parts[1])
+                    current_fps = float(parts[2])
+                    self._adjust_quality_based_on_feedback(quality_adjustment, current_fps)
         except Exception as e:
             print(f"Message processing error: {e}")
+    
+    def _adjust_quality_based_on_feedback(self, quality_adjustment, current_fps):
+        """Adjust quality based on network feedback"""
+        # Apply quality adjustment with bounds
+        self.network_stats['current_quality_offset'] += quality_adjustment
+        self.network_stats['current_quality_offset'] = max(-50, min(50, self.network_stats['current_quality_offset']))
+        
+        # Store FPS history for trend analysis
+        self.network_stats['fps_history'].append(current_fps)
+        if len(self.network_stats['fps_history']) > 10:
+            self.network_stats['fps_history'].pop(0)
+        
+        # Adjust tile size based on performance
+        avg_fps = sum(self.network_stats['fps_history']) / len(self.network_stats['fps_history']) if self.network_stats['fps_history'] else current_fps
+        
+        if avg_fps < 30 and self.tile_size > 32:
+            self.tile_size = max(32, self.tile_size // 2)  # Smaller tiles for better granularity
+            print(f"Reduced tile size to {self.tile_size} for better performance")
+        elif avg_fps > 50 and self.tile_size < 128:
+            self.tile_size = min(128, self.tile_size * 2)  # Larger tiles for better compression
+            print(f"Increased tile size to {self.tile_size} for better compression")
     
     def set_variable(self, variable, value, should_print=True):
         """Set configuration variable"""
@@ -201,6 +290,11 @@ class RawControllerProtocol(RawSocketProtocol):
         super().__init__()
         self.tk_root = tk_root
         self.last_received_time = time.time()
+        
+        # Tile management
+        self.tile_cache = {}  # Cache of received tiles
+        self.full_image = None  # Reconstructed full image
+        self.image_size = None  # Size of the full image
         
         # Set message handler
         self.set_message_handler(self.message_received)
@@ -367,20 +461,27 @@ class RawControllerProtocol(RawSocketProtocol):
             self.tk_root.quit()
     
     def message_received(self, data: bytes):
-        """Handle received screenshots"""
+        """Handle received screenshots and tiles"""
         try:
             current_time = time.time()
             
-            # Process image data (numpy or JPEG)
-            if data.startswith(b'NUMPY'):
-                self.process_numpy_data(data[5:])
+            if data == b'NO_CHANGE':
+                # No changes, just update FPS
+                pass
+            elif data.startswith(b'TILES'):
+                # Tile-based update
+                self._process_tiles(data[5:])
             else:
+                # Legacy full image
                 self.process_jpeg_data(data)
             
             # Calculate and display FPS
             if hasattr(self, 'last_received_time') and hasattr(self, 'fps_label'):
                 fps = 1.0 / (current_time - self.last_received_time)
                 self.fps_label['text'] = f'{fps:.1f}'
+                
+                # Send network stats back to controllee for adaptive quality
+                self._send_network_feedback(fps)
             
             self.last_received_time = current_time
             
@@ -391,6 +492,22 @@ class RawControllerProtocol(RawSocketProtocol):
             print(f"Controller message error: {e}")
             # Still request next screenshot
             self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
+    
+    def _send_network_feedback(self, current_fps):
+        """Send network performance feedback to controllee"""
+        # Simple adaptive quality: if FPS is low, request lower quality
+        target_fps = self.fps_scale.get() if hasattr(self, 'fps_scale') else VAR_FPS_DEFAULT
+        
+        if current_fps < target_fps * 0.8:  # FPS is 20% below target
+            quality_adjustment = -10  # Reduce quality
+        elif current_fps > target_fps * 1.1:  # FPS is 10% above target
+            quality_adjustment = 5  # Can increase quality slightly
+        else:
+            quality_adjustment = 0  # Keep current quality
+        
+        # Send feedback
+        feedback = f"NET_FEEDBACK:{quality_adjustment}:{current_fps:.1f}"
+        self.write_message(feedback.encode('ascii'))
     
     def process_numpy_data(self, data: bytes):
         """Process numpy data with anti-flicker optimization"""
@@ -430,25 +547,98 @@ class RawControllerProtocol(RawSocketProtocol):
         except Exception as e:
             print(f"Numpy processing error: {e}")
     
-    def process_jpeg_data(self, data: bytes):
-        """Process JPEG data with anti-flicker optimization"""
+    def _process_tiles(self, data: bytes):
+        """Process tile-based updates"""
         try:
             import PIL.Image
             from PIL import ImageTk
             
+            # Parse header
+            if len(data) < 8:
+                return
+            num_tiles, quality = struct.unpack('<II', data[:8])
+            data = data[8:]
+            
+            # Process tiles
+            tiles_processed = 0
+            while tiles_processed < num_tiles and len(data) >= 16:
+                # Parse tile header
+                tile_header = data[:16]
+                x, y, tile_width, tile_height = struct.unpack('<IIII', tile_header)
+                data = data[16:]
+                
+                # Find JPEG data end (look for next tile header or end)
+                jpeg_end = len(data)
+                if tiles_processed < num_tiles - 1:
+                    # Look for next tile header (16 bytes of 4 ints)
+                    for i in range(16, len(data) - 16):
+                        if len(data) > i + 16:
+                            try:
+                                # Check if this looks like coordinates
+                                test_x, test_y, test_w, test_h = struct.unpack('<IIII', data[i:i+16])
+                                if 0 <= test_x <= 10000 and 0 <= test_y <= 10000 and 1 <= test_w <= 200 and 1 <= test_h <= 200:
+                                    jpeg_end = i
+                                    break
+                            except:
+                                continue
+                
+                jpeg_data = data[:jpeg_end]
+                data = data[jpeg_end:]
+                
+                # Decode tile
+                try:
+                    tile_img = PIL.Image.open(io.BytesIO(jpeg_data))
+                    
+                    # Cache tile
+                    tile_key = (x, y)
+                    self.tile_cache[tile_key] = tile_img
+                    
+                    # Update image size if needed
+                    if self.image_size is None:
+                        # Estimate full image size (this is approximate)
+                        self.image_size = (1920, 1080)  # Default, will be updated
+                    
+                    tiles_processed += 1
+                    
+                except Exception as e:
+                    print(f"Tile decode error: {e}")
+                    continue
+            
+            # Reconstruct full image from tiles
+            self._reconstruct_image()
+            
+        except Exception as e:
+            print(f"Tile processing error: {e}")
+    
+    def _reconstruct_image(self):
+        """Reconstruct full image from cached tiles"""
+        if not self.tile_cache or not self.image_size:
+            return
+        
+        try:
+            import PIL.Image
+            from PIL import ImageTk
+            
+            # Create full image
+            full_img = PIL.Image.new('RGB', self.image_size, (0, 0, 0))
+            
+            # Paste tiles
+            for (x, y), tile in self.tile_cache.items():
+                # Ensure tile fits
+                if x + tile.size[0] <= self.image_size[0] and y + tile.size[1] <= self.image_size[1]:
+                    full_img.paste(tile, (x, y))
+            
+            # Resize to fit display
             new_size = self.get_label_size()
             if new_size[0] > 0 and new_size[1] > 0:
-                img = PIL.Image.open(io.BytesIO(data))
-                img = img.resize(new_size, PIL.Image.NEAREST)
+                full_img = full_img.resize(new_size, PIL.Image.NEAREST)
                 
-                # Anti-flicker: create image and update safely
-                new_image = ImageTk.PhotoImage(img)
-                
-                # Use after_idle to prevent flicker
+                # Update display
+                new_image = ImageTk.PhotoImage(full_img)
                 self.tk_root.after_idle(lambda: self.update_image_safe(new_image))
                 
         except Exception as e:
-            print(f"JPEG processing error: {e}")
+            print(f"Image reconstruction error: {e}")
     
     def update_image_safe(self, new_image):
         """Safely update image to prevent flicker"""
