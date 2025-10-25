@@ -9,17 +9,41 @@ class ProtocolBase(Protocol):
         self.buffer = bytes([])
         self.receiveBuffer = bytes([])
         self.receiveMessageLength = -1
-        reactor.callLater(0.05, self.flush)
+        self.flush_scheduled = False
+        # Ultra-aggressive flushing for maximum FPS
+        reactor.callLater(0.0001, self.flush)
 
     def writeMessage(self, newBytes):
         self.buffer += struct.pack(NUM_FORMAT, len(newBytes))
         self.buffer += newBytes
+        
+        # Immediate flush for any message to minimize latency
+        if not self.flush_scheduled:
+            self.flush_scheduled = True
+            reactor.callLater(0, self.flush_immediate)
+
+    def flush_immediate(self):
+        self.flush_scheduled = False
+        if len(self.buffer) > 0:
+            try:
+                # Send everything immediately for ultra-low latency
+                self.transport.write(self.buffer)
+                self.buffer = bytes([])
+            except:
+                pass  # Ignore errors during immediate flush
 
     def flush(self):
-        if len(self.buffer) > 0:
-            self.transport.write(self.buffer[:65000])
-            self.buffer = self.buffer[65000:]
-        reactor.callLater(0.05, self.flush)
+        if len(self.buffer) > 0 and not self.flush_scheduled:
+            try:
+                # Send large chunks efficiently
+                chunk_size = min(len(self.buffer), 262144)  # 256KB chunks for better throughput
+                self.transport.write(self.buffer[:chunk_size])
+                self.buffer = self.buffer[chunk_size:]
+            except:
+                pass
+        
+        # Extremely frequent flushing for ultra-high FPS
+        reactor.callLater(0.0001, self.flush)
 
     def dataReceived(self, data: bytes):
         self.receiveBuffer += data

@@ -126,11 +126,37 @@ class CommandKeyboardInput(CommandBase):
     def __str__(self):
         return ('Press ' if self.isDown else 'Release ') + str(self.keycode)
 
+class CommandScrollMouse(CommandBase):
+    def __init__(self, config: dict, x: float, y: float, direction: int, amount: int):
+        with mss() as sct:
+            m = sct.monitors[config[VAR_MONITOR]]
+            self.target = (round(m['width'] * x + m['left']),
+                           round(m['height'] * y + m['top']))
+        self.direction = direction  # 1 for up, -1 for down
+        self.amount = max(1, amount)  # Ensure at least 1 scroll
+        CommandBase.__init__(self, config)
+    
+    def update(self):
+        CommandBase.update(self)
+        if self.frame == 0:
+            controller = mouse.Controller()
+            # Move to position first
+            controller.position = self.target
+            # Perform scroll
+            scroll_delta = self.direction * self.amount
+            controller.scroll(0, scroll_delta)
+        self.finish()
+    
+    def __str__(self):
+        direction_str = 'Up' if self.direction > 0 else 'Down'
+        return f'Scroll {direction_str} at {self.target[0]}x{self.target[1]} (amount: {self.amount})'
+
 class Commands(threading.Thread):
     command_mappings = {
         'MoveMouse': CommandMoveMouse,
         'MouseInput': CommandMouseInput,
-        'KeyboardInput': CommandKeyboardInput
+        'KeyboardInput': CommandKeyboardInput,
+        'ScrollMouse': CommandScrollMouse
     }
 
     def __init__(self, config, *args, **kwargs):
@@ -168,4 +194,5 @@ class Commands(threading.Thread):
                 except Exception as e:
                     print("Error happened")
                     print(e)
-            time.sleep(0.01)
+            # Reduced sleep time for better responsiveness with high FPS
+            time.sleep(0.001)  # 1ms for better high-FPS performance
