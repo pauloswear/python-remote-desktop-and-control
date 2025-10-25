@@ -170,6 +170,9 @@ class RawSocketServer(RawSocketProtocol):
                     
                     self.client_protocol.socket = self.server_socket
                     self.client_protocol.remote_addr = addr
+                    # If protocol has delegated protocol
+                    if hasattr(self.client_protocol, 'protocol'):
+                        self.client_protocol.protocol.remote_addr = addr
                     self.client_protocol.running = True
                     
                     # Start send worker
@@ -253,8 +256,9 @@ class RawSocketClient(RawSocketProtocol):
     def connect(self):
         """Connect to server"""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(('0.0.0.0', 0))  # Bind to random port for receiving
         self.remote_addr = (self.host, self.port)
-        print(f"UDP client ready to connect to {self.host}:{self.port}")
+        print(f"UDP client bound to random port, ready to connect to {self.host}:{self.port}")
         
         # Create protocol instance
         if callable(self.protocol_class):
@@ -268,6 +272,9 @@ class RawSocketClient(RawSocketProtocol):
             
         self.protocol_instance.socket = self.socket
         self.protocol_instance.remote_addr = self.remote_addr
+        # If protocol has delegated protocol (like PyQt5), set there too
+        if hasattr(self.protocol_instance, 'protocol'):
+            self.protocol_instance.protocol.remote_addr = self.remote_addr
         self.protocol_instance.running = True
         
         # Start worker threads
