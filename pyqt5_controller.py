@@ -35,6 +35,15 @@ class PyQt5ControllerProtocol(QObject):
         self.window = None
         self.last_received_time = time.time()
         
+        # Mouse tracking state
+        self.is_dragging = False
+        self.drag_button = None
+        self.last_mouse_pos = None
+        
+        # Performance optimization variables
+        self.last_image_size = None
+        self.cached_pixmap = None
+        
         # Connect signals
         self.image_received.connect(self.update_display)
         self.fps_updated.connect(self.update_fps_label)
@@ -48,10 +57,18 @@ class PyQt5ControllerProtocol(QObject):
             self.app = QApplication(sys.argv)
         else:
             self.app = QApplication.instance()
+        
+        # Performance optimizations for higher FPS
+        self.app.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings, True)
+        self.app.setAttribute(Qt.AA_NativeWindows, False)
+        self.app.setAttribute(Qt.AA_DontUseNativeMenuBar, True)
             
         self.window = QMainWindow()
         self.window.setWindowTitle("Python Remote Desktop - PyQt5 Controller")
         self.window.setGeometry(100, 100, 1200, 800)
+        
+        # Disable animations for instant response
+        self.window.setAnimated(False)
         self.window.setStyleSheet("""
             QMainWindow { background-color: #1e1e1e; }
             QLabel { color: white; font-size: 12px; }
@@ -93,11 +110,20 @@ class PyQt5ControllerProtocol(QObject):
         self.image_label.setStyleSheet("border: 1px solid #555; background-color: black;")
         self.image_label.setAlignment(Qt.AlignCenter)  # Center the image
         self.image_label.setMinimumSize(800, 600)
+        
+        # Performance optimizations
+        self.image_label.setAttribute(Qt.WA_OpaquePaintEvent)  # Faster painting
+        self.image_label.setAttribute(Qt.WA_NoSystemBackground)  # No background clearing
+        
+        # Enable mouse tracking for real-time movement detection
+        self.image_label.setMouseTracking(True)
+        
         layout.addWidget(self.image_label)
         
         # Setup mouse and keyboard events
         self.image_label.mousePressEvent = self.mouse_press_event
         self.image_label.mouseReleaseEvent = self.mouse_release_event
+        self.image_label.mouseMoveEvent = self.mouse_move_event
         self.image_label.wheelEvent = self.wheel_event
         self.window.keyPressEvent = self.key_press_event
         self.window.keyReleaseEvent = self.key_release_event
@@ -136,7 +162,7 @@ class PyQt5ControllerProtocol(QObject):
         # FPS control
         control_layout.addWidget(QLabel("FPS:"))
         self.fps_slider = QSlider(Qt.Horizontal)
-        self.fps_slider.setRange(15, 144)
+        self.fps_slider.setRange(30, 240)  # Higher maximum FPS
         self.fps_slider.setValue(VAR_FPS_DEFAULT)
         self.fps_slider.valueChanged.connect(self.change_fps)
         control_layout.addWidget(self.fps_slider)
@@ -231,14 +257,38 @@ class PyQt5ControllerProtocol(QObject):
     def mouse_press_event(self, event):
         """Handle mouse press events"""
         pos = self.get_relative_position(event.x(), event.y())
+        
+        # Set drag state
+        self.is_dragging = True
+        self.drag_button = event.button()
+        self.last_mouse_pos = pos
+        
+        # Send mouse move and press
         self.send_command('MoveMouse', pos[0], pos[1])
         self.send_command('MouseInput', event.button() == Qt.LeftButton, True)
     
     def mouse_release_event(self, event):
         """Handle mouse release events"""
         pos = self.get_relative_position(event.x(), event.y())
+        
+        # Clear drag state
+        self.is_dragging = False
+        self.drag_button = None
+        self.last_mouse_pos = None
+        
+        # Send mouse move and release
         self.send_command('MoveMouse', pos[0], pos[1])
         self.send_command('MouseInput', event.button() == Qt.LeftButton, False)
+    
+    def mouse_move_event(self, event):
+        """Handle mouse move events - crucial for drag operations"""
+        pos = self.get_relative_position(event.x(), event.y())
+        
+        # Always send mouse movement for real-time tracking
+        self.send_command('MoveMouse', pos[0], pos[1])
+        
+        # Update last known position
+        self.last_mouse_pos = pos
     
     def wheel_event(self, event):
         """Handle mouse wheel events"""
@@ -265,13 +315,9 @@ class PyQt5ControllerProtocol(QObject):
         print("PyQt5 Controller connected!")
         self.window.show()
         
-        # Request first screenshot with delay to ensure connection is ready
-        def request_screenshot():
-            print("Requesting first screenshot...")
-            self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
-        
-        # Use QTimer to delay the first request
-        QTimer.singleShot(100, request_screenshot)
+        # Request first screenshot immediately
+        print("Requesting first screenshot...")
+        self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
     
     def message_received(self, data: bytes):
         """Handle received messages (called from transport thread)"""
@@ -290,7 +336,7 @@ class PyQt5ControllerProtocol(QObject):
             # Emit signal for image processing (thread-safe)
             self.image_received.emit(data)
             
-            # Request next screenshot
+            # Request next screenshot immediately for maximum FPS
             self.write_message(COMMAND_SEND_SCREENSHOT.encode('ascii'))
             
         except Exception as e:
@@ -353,36 +399,17 @@ class PyQt5ControllerProtocol(QObject):
             traceback.print_exc()
     
     def process_jpeg_data(self, data: bytes):
-        """Process JPEG image data"""
+        """Process JPEG image data - optimized for maximum FPS"""
         try:
-            # Load with PIL first, then convert to Qt
-            pil_image = Image.open(io.BytesIO(data))
-            
-            # Convert PIL to RGB if needed
-            if pil_image.mode != 'RGB':
-                pil_image = pil_image.convert('RGB')
-            
-            # Convert PIL to numpy array
-            img_array = np.array(pil_image)
-            height, width, channels = img_array.shape
-            
-            # Ensure contiguous array
-            img_array = np.ascontiguousarray(img_array)
-            
-            # Create QImage
-            bytes_per_line = width * 3
-            qimage = QImage(img_array.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            
-            # Verify QImage is valid
-            if qimage.isNull():
+            # Direct QPixmap loading from JPEG bytes - fastest method
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(data, 'JPEG'):
                 return
             
-            # Convert to QPixmap and display
-            pixmap = QPixmap.fromImage(qimage)
+            # Store original pixmap for aspect ratio calculations
+            self.original_pixmap = pixmap
             
-            if pixmap.isNull():
-                return
-                
+            # Use the existing aspect ratio function for consistency
             self.set_pixmap_with_aspect_ratio(pixmap)
             
         except Exception as e:
@@ -395,7 +422,7 @@ class PyQt5ControllerProtocol(QObject):
         self.fps_display.setText(fps_text)
     
     def set_pixmap_with_aspect_ratio(self, pixmap):
-        """Set pixmap maintaining aspect ratio"""
+        """Set pixmap maintaining aspect ratio - optimized for speed"""
         if pixmap.isNull():
             return
         
@@ -405,20 +432,29 @@ class PyQt5ControllerProtocol(QObject):
         # Get the label size
         label_size = self.image_label.size()
         
-        # Scale the pixmap to fit the label while maintaining aspect ratio
+        # Check if scaling is needed
+        if pixmap.size() == label_size:
+            self.image_label.setPixmap(pixmap)
+            return
+        
+        # Use fast transformation for better FPS
         scaled_pixmap = pixmap.scaled(
             label_size, 
             Qt.KeepAspectRatio, 
-            Qt.SmoothTransformation
+            Qt.FastTransformation  # Faster rendering
         )
         
         self.image_label.setPixmap(scaled_pixmap)
     
     def window_resize_event(self, event):
-        """Handle window resize events"""
-        # Re-scale the image when window is resized
+        """Handle window resize events - instant response"""
+        # Immediately re-scale without animation delays
         if self.original_pixmap:
+            # Disable updates temporarily for instant resize
+            self.image_label.setUpdatesEnabled(False)
             self.set_pixmap_with_aspect_ratio(self.original_pixmap)
+            self.image_label.setUpdatesEnabled(True)
+            self.image_label.repaint()  # Force immediate repaint
         
         # Call the original resize event
         QMainWindow.resizeEvent(self.window, event)
