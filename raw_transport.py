@@ -9,6 +9,7 @@ from typing import Callable, Optional
 import queue
 
 NUM_FORMAT = '<Q'
+UDP_MAX_SIZE = 8192  # Maximum safe UDP datagram size
 
 class RawSocketProtocol:
     """Base class for raw socket protocols - much faster than Twisted"""
@@ -19,8 +20,13 @@ class RawSocketProtocol:
         self.send_queue = queue.Queue()
         self.receive_buffer = b''
         self.message_handler: Optional[Callable] = None
-        self.is_udp = True  # Use UDP for lower latency
+        self.is_udp = False  # Use TCP for reliability - UDP fragmentation is complex
         self.remote_addr = None
+        
+        # UDP fragmentation support (kept for future use)
+        self._udp_reassembly_buffer = None
+        self._udp_received_fragments = None
+        self._udp_expected_fragments = None
         
     def set_message_handler(self, handler: Callable):
         """Set function to handle received messages"""
@@ -41,8 +47,8 @@ class RawSocketProtocol:
                     break
                     
                 if self.is_udp and self.remote_addr:
-                    # UDP send
-                    self.socket.sendto(data, self.remote_addr)
+                    # UDP send with fragmentation for large messages
+                    self._send_udp_fragmented(data, self.remote_addr)
                 else:
                     # TCP send with length prefix
                     message_length = struct.pack(NUM_FORMAT, len(data))
@@ -55,21 +61,54 @@ class RawSocketProtocol:
                     print(f"Send error: {e}")
                 break
     
+    def _send_udp_fragmented(self, data: bytes, addr):
+        """Send large data via UDP with fragmentation"""
+        total_size = len(data)
+        
+        if total_size <= UDP_MAX_SIZE:
+            # Small message, send directly
+            try:
+                self.socket.sendto(data, addr)
+            except Exception as e:
+                print(f"UDP send error: {e}")
+            return
+        
+        # Large message, fragment it
+        # Send header with total size first
+        header = struct.pack('<Q', total_size)
+        try:
+            self.socket.sendto(header, addr)
+        except Exception as e:
+            print(f"UDP header send error: {e}")
+            return
+        
+        # Send data in chunks
+        offset = 0
+        fragment_id = 0
+        while offset < total_size:
+            chunk_size = min(UDP_MAX_SIZE - 8, total_size - offset)  # 8 bytes for fragment header
+            chunk = data[offset:offset + chunk_size]
+            
+            # Add fragment header: fragment_id (4 bytes) + offset (4 bytes)
+            fragment_header = struct.pack('<II', fragment_id, offset)
+            fragment_data = fragment_header + chunk
+            
+            try:
+                self.socket.sendto(fragment_data, addr)
+            except Exception as e:
+                print(f"UDP fragment send error: {e}")
+                return
+            
+            offset += chunk_size
+            fragment_id += 1
+    
     def _receive_worker(self):
         """High-performance receive worker thread"""
         while self.running:
             try:
                 if self.is_udp:
-                    # UDP receive
-                    data, addr = self.socket.recvfrom(131072)  # 128KB chunks
-                    if self.remote_addr is None:
-                        self.remote_addr = addr  # Set remote address on first receive
-                    # For UDP, each recv is a complete message (no length prefix needed)
-                    if self.message_handler:
-                        try:
-                            self.message_handler(data)
-                        except Exception as e:
-                            print(f"Message handler error: {e}")
+                    # UDP receive with fragmentation support
+                    self._receive_udp_fragmented()
                 else:
                     # TCP receive
                     data = self.socket.recv(131072)  # 128KB chunks for better throughput
@@ -83,6 +122,71 @@ class RawSocketProtocol:
                 if self.running:
                     print(f"Receive error: {e}")
                 break
+    
+    def _receive_udp_fragmented(self):
+        """Receive UDP data with fragmentation reassembly"""
+        try:
+            data, addr = self.socket.recvfrom(131072)
+            
+            if self.remote_addr is None:
+                self.remote_addr = addr
+            
+            # Check if this is a header message (total size)
+            if len(data) == 8:  # Size of uint64_t
+                try:
+                    expected_size = struct.unpack('<Q', data)[0]
+                    self._udp_reassembly_buffer = bytearray(expected_size)
+                    self._udp_received_fragments = set()
+                    self._udp_expected_fragments = None
+                    return
+                except:
+                    pass  # Not a header, treat as regular message
+            
+            # Check if this is a fragment
+            if len(data) >= 8:
+                try:
+                    fragment_id, offset = struct.unpack('<II', data[:8])
+                    chunk_data = data[8:]
+                    
+                    if hasattr(self, '_udp_reassembly_buffer') and self._udp_reassembly_buffer is not None:
+                        # Store fragment
+                        self._udp_reassembly_buffer[offset:offset + len(chunk_data)] = chunk_data
+                        self._udp_received_fragments.add(fragment_id)
+                        
+                        # Check if we have all fragments
+                        if self._udp_expected_fragments is None:
+                            # Estimate number of fragments based on first fragment
+                            chunk_size = len(chunk_data)
+                            total_size = len(self._udp_reassembly_buffer)
+                            self._udp_expected_fragments = (total_size + chunk_size - 1) // chunk_size
+                        
+                        if len(self._udp_received_fragments) == self._udp_expected_fragments:
+                            # All fragments received, reassemble message
+                            complete_data = bytes(self._udp_reassembly_buffer)
+                            self._udp_reassembly_buffer = None
+                            self._udp_received_fragments = None
+                            self._udp_expected_fragments = None
+                            
+                            # Process complete message
+                            if self.message_handler:
+                                try:
+                                    self.message_handler(complete_data)
+                                except Exception as e:
+                                    print(f"Message handler error: {e}")
+                        return
+                except:
+                    pass  # Not a fragment, treat as regular message
+            
+            # Regular small message
+            if self.message_handler:
+                try:
+                    self.message_handler(data)
+                except Exception as e:
+                    print(f"Message handler error: {e}")
+                    
+        except Exception as e:
+            if self.running:
+                print(f"UDP receive error: {e}")
     
     def _process_messages(self):
         """Process complete messages from buffer"""
