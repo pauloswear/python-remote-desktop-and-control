@@ -129,6 +129,33 @@ class RawControlleeProtocol(RawSocketProtocol):
             
             self.write_message(message_data)
     
+    def send_screenshot_jpeg(self):
+        """Tile-based JPEG implementation with delta encoding"""
+        with mss() as sct:
+            monitor_idx = min(self.config[VAR_MONITOR], len(sct.monitors) - 1)
+            ss = sct.grab(sct.monitors[monitor_idx])
+            
+            # Convert to PIL Image
+            img = PIL.Image.frombytes("RGB", (ss.width, ss.height), ss.bgra, "raw", "BGRX")
+            
+            # Apply scaling
+            scale = self.config.get(VAR_SCALE, VAR_SCALE_DEFAULT)
+            if scale < 1:
+                new_width = int(img.size[0] * scale)
+                new_height = int(img.size[1] * scale)
+                img = img.resize((new_width, new_height), PIL.Image.LANCZOS)
+            
+            # Use tile-based delta encoding
+            changed_tiles = self._get_changed_tiles(img)
+            
+            if not changed_tiles:
+                # No changes detected, send minimal update
+                self.write_message(b'NO_CHANGE')
+                return
+            
+            # Send changed tiles
+            self._send_changed_tiles(img, changed_tiles)
+    
     def _get_changed_tiles(self, img):
         """Detect which tiles have changed using hash comparison and cache static tiles"""
         width, height = img.size
