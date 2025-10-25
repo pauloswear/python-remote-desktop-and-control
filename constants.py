@@ -1,13 +1,13 @@
 VAR_SCALE = 'scale'
-VAR_SCALE_DEFAULT = 0.5
+VAR_SCALE_DEFAULT = 1.0  # Full resolution by default
 VAR_MONITOR = 'monitor'
 VAR_MONITOR_DEFAULT = 0
 VAR_SHOULD_UPDATE_COMMANDS = 'update_commands'
 VAR_SHOULD_UPDATE_COMMANDS_DEFAULT = True
 VAR_FPS = 'fps'
-VAR_FPS_DEFAULT = 30  # Reduced default to prevent flicker
+VAR_FPS_DEFAULT = 30  # Balanced FPS
 VAR_JPEG_QUALITY = 'jpeg_quality'
-VAR_JPEG_QUALITY_DEFAULT = 40
+VAR_JPEG_QUALITY_DEFAULT = 95  # Maximum quality by default
 VAR_USE_NUMPY = 'use_numpy'
 VAR_USE_NUMPY_DEFAULT = False  # JPEG is faster for most cases
 VAR_COMPRESSION_LEVEL = 'compression_level'

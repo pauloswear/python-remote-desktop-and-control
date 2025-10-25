@@ -228,8 +228,11 @@ def create_raw_socket_client(host: str, port: int, protocol_class, protocol_args
     client = RawSocketClient(host, port, protocol_class, protocol_args)
     protocol_instance = client.connect()
     
+    # Expose protocol instance through client for access
+    client.protocol_instance = protocol_instance
+    
     # If protocol has tkinter root, expose it
     if protocol_instance and hasattr(protocol_instance, 'tk_root'):
         client.tk_root = protocol_instance.tk_root
     
-    return protocol_instance if protocol_instance else client
+    return client
